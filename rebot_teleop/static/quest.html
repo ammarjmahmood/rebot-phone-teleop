@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>reBot teleop VR</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header><h1>reBot teleop VR</h1></header>
+<main>
+<section class="card">
+<form id="pair" hidden><label>Pairing code from the arm computer <input id="code" inputmode="numeric" autocomplete="off"></label><button class="primary" type="submit">Pair this headset</button></form>
+<div id="ready" hidden>
+<label>Where are you standing?
+<select id="view"><option value="behind">Behind the arm, facing the same way</option><option value="front">Facing the arm</option><option value="left">On the arm's left</option><option value="right">On the arm's right</option></select></label>
+<label class="check"><input type="checkbox" id="rotation" checked> Gripper rotation follows the controller</label>
+<p class="fine">Face the way you chose before entering VR. Hold the right grip button to move: the gripper copies your hand's movement and rotation from the moment you squeezed. Release to stop. The trigger closes the gripper. B homes the arm.</p>
+<div class="row"><button class="primary" id="enter">Enter VR</button><button id="exit" hidden>Stop VR control</button></div>
+</div>
+<p id="status">Connecting</p>
+</section>
+</main>
+<script src="/static/quest.js"></script>
+</body>
+</html>

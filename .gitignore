@@ -1,0 +1,12 @@
+.venv/
+.venv-hebi/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+build/
+.env
+ios/**/*.xcodeproj/
+ios/**/DerivedData/
+ios/**/build/
+xcuserdata/
