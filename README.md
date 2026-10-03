@@ -2,7 +2,7 @@
 
 Teleoperate the [Seeed Studio reBot Arm B601 RS](https://wiki.seeedstudio.com/rebot_b601_rs_getting_started/) with an iPhone, the HEBI Mobile I/O app or a Meta Quest. Move the phone and the gripper follows.
 
-The phone interaction follows the approach published with **TidyBot++** (Wu et al., CoRL 2024), adapted to a six axis desktop arm, a native ARKit app and RobStride motors over CAN. As far as we could find, this is the first phone and VR teleoperation for the reBot; the existing reBot teleoperation uses Seeed's reBot Arm 102 leader arm.
+The phone interaction follows the approach published with **TidyBot++** (Wu et al., CoRL 2024), adapted to a six axis desktop arm, a native ARKit app and RobStride motors over CAN. As far as we could find, this is the first phone teleoperation for the reBot and the first open package combining phone, HEBI and Quest control for the B601 RS. Related reBot work includes Seeed's reBot Arm 102 leader arm, a community VR demo and a community ROS2 gamepad IK teleop.
 
 ## Status
 
