@@ -5,16 +5,33 @@ from pathlib import Path
 import uvicorn
 
 
+def detect_can():
+    base = Path("/sys/class/net")
+    names = []
+    for path in sorted(base.iterdir()) if base.exists() else []:
+        try:
+            if (path / "type").read_text().strip() == "280":
+                names.append(path.name)
+        except OSError:
+            continue
+    for name in names:
+        driver = base / name / "device" / "driver"
+        if driver.exists() and driver.resolve().name == "peak_usb":
+            return name
+    return names[0] if names else "can0"
+
+
 def main():
     parser = argparse.ArgumentParser(description="Phone, HEBI and Quest teleoperation for the Seeed reBot B601 RS arm")
-    parser.add_argument("--can", default="can0", help="SocketCAN interface connected to the arm")
+    parser.add_argument("--can", default="auto", help="SocketCAN interface connected to the arm; auto picks the PEAK USB adapter")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--https-port", type=int, default=9443, help="HTTPS port for the Quest page")
     parser.add_argument("--lan", action="store_true", help="Listen on the network so phones and headsets can connect")
     parser.add_argument("--data", default=str(Path.home() / ".rebot-teleop"), help="Folder for settings, secrets and the local certificate")
     args = parser.parse_args()
     data = Path(args.data)
-    os.environ["REBOT_TELEOP_CAN"] = args.can
+    os.environ["REBOT_TELEOP_CAN"] = detect_can() if args.can == "auto" else args.can
+    print("Using CAN interface", os.environ["REBOT_TELEOP_CAN"])
     os.environ["REBOT_TELEOP_PORT"] = str(args.port)
     os.environ["REBOT_TELEOP_HTTPS_PORT"] = str(args.https_port)
     host = "127.0.0.1"

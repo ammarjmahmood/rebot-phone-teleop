@@ -30,18 +30,36 @@ The iPhone path was developed and used on a real B601 RS with an iPhone 16 Pro M
 
 ## Install and run
 
+On the Linux computer connected to the arm (PC, Jetson or Raspberry Pi), one command installs everything: uv, Python 3.11, this repository in `~/rebot-phone-teleop` and the PEAK CAN driver and settings. It asks for your password once for the CAN setup.
+
 ```sh
-git clone https://github.com/ammarjmahmood/rebot-phone-teleop
-cd rebot-phone-teleop
-uv venv --python 3.11 .venv
-uv pip install --python .venv/bin/python -e .
-.venv/bin/python -m rebot_teleop --lan
+curl -fsSL https://raw.githubusercontent.com/ammarjmahmood/rebot-phone-teleop/main/install.sh | bash
 ```
 
-Open http://127.0.0.1:8080 on the arm computer.
+Add HEBI Mobile I/O support with `| bash -s -- --hebi`, or skip the CAN setup with `| bash -s -- --no-can`. Running it again updates an existing install.
+
+Start the server:
+
+```sh
+cd ~/rebot-phone-teleop && .venv/bin/python -m rebot_teleop --lan
+```
+
+It finds the PEAK adapter automatically (on a Jetson the built in CAN controller already takes `can0`); pass `--can can1` to choose one. Open http://127.0.0.1:8080 on that computer.
 
 1. Press **Power on and go to zero**. The arm can start in any pose inside its joint ranges; it enables holding position and drives slowly to zero. **Power on and hold here** enables without moving.
 2. Tick **Allow phone and headset motion** (lasts 15 minutes) and press **Show pairing code**. The page lists this computer's addresses, including a Tailscale address if it has one.
+
+### Running on a headless Jetson or another remote computer
+
+Power on, pairing and allowing motion are only accepted from the arm computer itself. From your laptop, open an SSH tunnel so the page counts as local:
+
+```sh
+ssh -L 8080:localhost:8080 <user>@<jetson address>
+```
+
+then open http://127.0.0.1:8080 on the laptop. Phones and the Quest connect to the Jetson's own WiFi or Tailscale address as usual.
+
+On Jetson the kernel ships without the PEAK USB driver; `scripts/setup_can.sh` (run by the installer) builds it from the matching Linux source against the JetPack kernel headers and loads it. Tested on a Jetson Orin with JetPack 6 (L4T R36.4, kernel 5.15.148).
 
 ### iPhone app
 
