@@ -12,7 +12,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 import psutil
 import segno
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -42,6 +42,24 @@ def lan_addresses():
                 continue
             found.append((address in ipaddress.ip_network("100.64.0.0/10"), name, entry.address))
     return [(name, address) for _, name, address in sorted(found)]
+
+
+def route_label(interface):
+    if interface == "Cloudflare":
+        return "Cloudflare"
+    if interface.startswith(("tailscale", "ts")):
+        return "Tailscale"
+    if interface.startswith(("wl", "wifi")):
+        return "WiFi"
+    if interface.startswith("l4tbr"):
+        return "USB cable"
+    if interface.startswith(("en", "eth")):
+        return "Ethernet"
+    return interface
+
+
+def app_link(url, code):
+    return "rebotteleop://pair?" + urlencode({"url": url, "code": code})
 
 
 def tailscale_name():
@@ -251,11 +269,12 @@ def create_app(data_dir: Path, env_path: Path, node_factory=None, hebi_source=No
         device(request)
         code = auth.pair("operator")
         addresses = []
-        for name, address in hosts:
-            url = f"http://{address}:{port}"
-            addresses.append({"interface": name, "url": url, "quest": f"https://{address}:{https_port}/quest", "qr": segno.make(url, error="m").svg_data_uri(scale=5, border=2)})
+        routes = [(name, f"http://{address}:{port}", f"https://{address}:{https_port}/quest") for name, address in hosts]
         if tunnel and tunnel.url:
-            addresses.insert(0, {"interface": "Cloudflare", "url": tunnel.url, "quest": tunnel.url + "/quest", "qr": segno.make(tunnel.url, error="m").svg_data_uri(scale=5, border=2)})
+            routes.insert(0, ("Cloudflare", tunnel.url, tunnel.url + "/quest"))
+        for name, url, quest in routes:
+            link = app_link(url, code)
+            addresses.append({"interface": name, "label": route_label(name), "url": url, "quest": quest, "app_link": link, "qr": segno.make(link, error="m").svg_data_uri(scale=5, border=2)})
         return {"code": code, "expires_in": 300, "addresses": addresses, "lan": lan, "cloudflare": tunnel.status if tunnel else None}
 
     def controller(request, name):

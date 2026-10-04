@@ -15,6 +15,9 @@ struct RebotTeleopApp: App {
                         link.sendPose(position: position, rotation: rotation)
                     }
                 }
+                .onOpenURL { url in
+                    Task { await link.open(url) }
+                }
         }
     }
 }

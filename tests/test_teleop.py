@@ -358,3 +358,21 @@ def test_extra_hosts_and_wildcards(tmp_path, monkeypatch):
         assert client.get("/health", headers={"host": "evil.example.com"}).status_code == 403
         session = client.post("/api/session", json={}, headers={"host": "quiet-river-1234.trycloudflare.com"})
         assert session.status_code in {401, 409, 422, 500} or not session.json().get("local")
+
+
+def test_pairing_codes_open_the_app(tmp_path, monkeypatch):
+    from urllib.parse import parse_qs, urlparse
+    monkeypatch.setenv("REBOT_TELEOP_LAN", "1")
+    monkeypatch.setattr("rebot_teleop.server.lan_addresses", lambda: [("wlan0", "192.168.1.20"), ("tailscale0", "100.89.54.6")])
+    monkeypatch.setattr("rebot_teleop.server.tailscale_name", lambda: None)
+    build, buses, holder = make_node(tmp_path / "data")
+    with TestClient(create_app(tmp_path / "data", tmp_path / ".env", node_factory=build)) as client:
+        client.post("/api/session", json={})
+        result = client.post("/api/pair", json={}).json()
+        labels = [a["label"] for a in result["addresses"]]
+        assert labels == ["WiFi", "Tailscale"]
+        link = urlparse(result["addresses"][1]["app_link"])
+        assert link.scheme == "rebotteleop"
+        query = parse_qs(link.query)
+        assert query["url"] == ["http://100.89.54.6:8080"] and query["code"] == [result["code"]]
+        assert result["addresses"][1]["qr"].startswith("data:image/svg+xml")

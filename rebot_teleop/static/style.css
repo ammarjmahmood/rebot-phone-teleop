@@ -16,3 +16,4 @@ label{display:block;margin:8px 0}.check{display:flex;gap:8px;align-items:center}
 #pairing .code{font-size:32px;letter-spacing:6px;font-weight:700}
 #toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#203c2d;color:#fff;padding:12px 18px;border-radius:8px}
 #toast.error{background:#8e3231}[hidden]{display:none!important}
+.route{display:flex;gap:14px;align-items:center;margin:12px 0}.route img{width:150px;height:150px;image-rendering:pixelated;border:1px solid #dde5e2;border-radius:6px}.applink{display:inline-block;margin:4px 0;padding:6px 10px;border-radius:6px;background:#c5f86b;color:#1d2b14;font-weight:600;text-decoration:none}

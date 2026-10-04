@@ -37,6 +37,22 @@ final class ArmLink: ObservableObject {
     private var lastNote: String?
     private let haptic = UINotificationFeedbackGenerator()
 
+    func open(_ url: URL) async {
+        guard url.scheme == "rebotteleop", let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems else { return }
+        let address = items.first { $0.name == "url" }?.value
+        let code = items.first { $0.name == "code" }?.value
+        if let address, !address.isEmpty {
+            serverURL = address
+            UserDefaults.standard.set(address, forKey: "serverURL")
+        }
+        if let code, !code.isEmpty {
+            disconnect()
+            await pair(code: code)
+        } else if paired {
+            connect()
+        }
+    }
+
     func pair(code: String) async {
         guard let url = URL(string: serverURL.trimmingCharacters(in: .whitespaces) + "/api/session") else {
             message = "Check the computer address"

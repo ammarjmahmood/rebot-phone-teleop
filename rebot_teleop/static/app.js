@@ -32,7 +32,8 @@ $('release').onclick = act(async () => { if ($('release').dataset.armed) { delet
 $('remote').onchange = act(() => api('remote', {enabled: $('remote').checked}));
 $('pair').onclick = act(async () => {
   const r = await api('pair', {});
-  $('pairing').innerHTML = `<p class="code">${esc(r.code)}</p><p class="fine">Expires in 5 minutes. Enter it in the reBot Teleop app or the Quest page.</p>` + (r.cloudflare && r.cloudflare !== 'running' ? `<p class="fine">Cloudflare tunnel: ${esc(r.cloudflare)}</p>` : '') + (r.lan || r.addresses.length ? r.addresses.map(a => `<p><img src="${a.qr}" alt="Address QR"><br><b>${esc(a.url)}</b> (${esc(a.interface)})<br>Quest: ${esc(a.quest)}</p>`).join('') : '<p class="fine">Start with --lan so phones and headsets can reach this computer.</p>');
+  const routes = r.addresses.map(a => `<div class="route"><img src="${a.qr}" alt="QR for ${esc(a.label)}"><div><b>${esc(a.label)}</b><br><a class="applink" href="${esc(a.app_link)}">Open in app</a><br><span class="fine">${esc(a.url)}</span><br><span class="fine">Quest: ${esc(a.quest)}</span></div></div>`).join('');
+  $('pairing').innerHTML = `<p class="code">${esc(r.code)}</p><p class="fine">Scan one code with the iPhone camera to open reBot Teleop and pair automatically. The code works once and expires in 5 minutes.</p>` + (routes || '<p class="fine">Start with --lan so phones and headsets can reach this computer.</p>') + (r.cloudflare && r.cloudflare !== 'running' ? `<p class="fine">Cloudflare tunnel: ${esc(r.cloudflare)}</p>` : '');
 });
 $('hebi-start').onclick = act(() => api('hebi/start', {}));
 $('hebi-stop').onclick = act(() => api('hebi/stop', {}));

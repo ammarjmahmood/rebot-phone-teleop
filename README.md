@@ -76,7 +76,7 @@ brew install xcodegen
 cd ios/RebotTeleop && xcodegen && open RebotTeleop.xcodeproj
 ```
 
-Choose your team under Signing and Capabilities and run it on the phone. Enter the computer address (for example `http://192.168.1.20:8080`) and the pairing code. Hold the phone upright with the camera looking the way you face, choose where you stand relative to the arm, then put your thumb on the pad and move.
+Choose your team under Signing and Capabilities and run it on the phone. On the control page press Show pairing code and scan the QR code for the route you want (WiFi, Tailscale or Cloudflare) with the iPhone camera; the app opens with the address and code filled in and pairs. You can also type the address and code by hand. Hold the phone upright with the camera looking the way you face, choose where you stand relative to the arm, then put your thumb on the pad and move.
 
 ### HEBI Mobile I/O
 

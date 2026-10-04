@@ -22,6 +22,9 @@ targets:
       properties:
         CFBundleDisplayName: reBot Teleop
         UILaunchScreen: {}
+        CFBundleURLTypes:
+          - CFBundleURLName: com.ammarjmahmood.rebotteleop
+            CFBundleURLSchemes: [rebotteleop]
         ITSAppUsesNonExemptEncryption: false
         UIRequiredDeviceCapabilities: [arkit]
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
