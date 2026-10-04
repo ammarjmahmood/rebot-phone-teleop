@@ -132,6 +132,7 @@ def test_power_on_anywhere_and_home(tmp_path):
         try:
             buses[0].motors[6].pos = math.radians(170)
             buses[0].motors[3].pos = math.radians(40)
+            buses[0].motors[4].pos = math.radians(90.3)
             await node.power_on(True)
             assert node.fault is None
             assert np.allclose(node.arm.q, 0, atol=0.01)
@@ -149,8 +150,8 @@ def test_limits_refused_and_far_past_limit_blocks_home(tmp_path):
             node.arm.enabled = True
             with pytest.raises(ValueError, match="limit"):
                 node.arm.write(np.radians([0, -10, 0, 0, 0, 0]), 0.02)
-            node.arm.measured[3] = math.radians(-100)
-            with pytest.raises(ValueError, match="past its limit"):
+            node.arm.measured[3] = math.radians(-105)
+            with pytest.raises(ValueError, match="20.0 degrees past its limit"):
                 node.planning_start()
         finally:
             await node.close()
@@ -330,3 +331,19 @@ def test_server_pairing_socket_autostart_and_quest_api(tmp_path, monkeypatch):
             with client.websocket_connect("/ws/app", headers={"authorization": "Bearer forged"}) as socket:
                 socket.receive_json()
         assert client.post("/api/power", json={"home": True}, headers={"x-forwarded-for": "10.0.0.2"}).status_code in {401, 403}
+
+
+def test_power_on_refuses_joint_far_outside_range(tmp_path):
+    async def scenario():
+        build, buses, _ = make_node(tmp_path)
+        node = build()
+        await node.start()
+        try:
+            buses[0].motors[4].pos = math.radians(105)
+            with pytest.raises(ValueError, match="Joints 4 read more than 15 degrees"):
+                await node.power_on(True)
+            assert not node.arm.torque
+        finally:
+            await node.close()
+
+    asyncio.run(scenario())

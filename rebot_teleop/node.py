@@ -136,9 +136,9 @@ class TeleopNode:
     def planning_start(self):
         start = np.asarray(self.arm.q, dtype=float).copy()
         excess = np.maximum(self.kin.lower - start, start - self.kin.upper)
-        if np.any(excess > math.radians(5)):
+        if np.any(excess > math.radians(15)):
             joint = int(np.argmax(excess))
-            raise ValueError(f"Joint {joint + 1} is {math.degrees(excess[joint]):.1f} degrees past its limit; move it back by hand with the motors off")
+            raise ValueError(f"Joint {joint + 1} is {math.degrees(excess[joint]):.1f} degrees past its limit; check the zero calibration in MotorBridge Studio")
         return np.clip(start, self.kin.lower, self.kin.upper)
 
     async def home(self):
