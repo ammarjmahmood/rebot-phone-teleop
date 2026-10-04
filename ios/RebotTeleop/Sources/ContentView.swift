@@ -8,6 +8,7 @@ struct StandOption: Identifiable {
 struct ContentView: View {
     @EnvironmentObject var link: ArmLink
     @EnvironmentObject var tracker: ARTracker
+    @Environment(\.scenePhase) private var scenePhase
     @State private var code = ""
     @State private var showSettings = false
     @State private var gripAtTouch: Double = 1.0
@@ -29,6 +30,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showSettings) { settings }
         .onAppear { if link.paired { link.connect() } }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { link.resume() } else if phase == .background { link.pause() }
+        }
     }
 
     private var pairing: some View {
@@ -70,6 +74,17 @@ struct ContentView: View {
             }
             .padding(12)
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+
+            if !link.connected {
+                VStack(spacing: 8) {
+                    if let message = link.message { Text(message).font(.footnote).multilineTextAlignment(.center) }
+                    Button { link.connect() } label: { Label("Reconnect", systemImage: "arrow.clockwise") }
+                        .buttonStyle(.borderedProminent)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(12)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+            }
 
             HStack(spacing: 8) {
                 Button(link.status.owner ? "Stop" : "Start") {
@@ -185,7 +200,7 @@ struct ContentView: View {
                     TextField("Address", text: $link.serverURL)
                         .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
                     Text("Use the address shown under Show pairing code, for example http://192.168.1.20:8080 on the same WiFi or the computer's Tailscale address.").font(.caption)
-                    Button("Reconnect") { UserDefaults.standard.set(link.serverURL, forKey: "serverURL"); link.connect() }
+                    Button("Save and reconnect") { UserDefaults.standard.set(link.serverURL, forKey: "serverURL"); link.connect(); showSettings = false }
                 }
                 Section("How it works") {
                     Text("Hold the phone upright with the camera looking the way you face and pick where you stand. Touching the pad takes control and aligns forward. Keep your thumb on the pad and move the phone: the gripper moves and turns by the same amount. Lift your thumb to stop. The strip on the left opens and closes the gripper without moving the arm. Tap Align any time forward feels off.")

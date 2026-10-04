@@ -6,7 +6,7 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.9"
-    MARKETING_VERSION: "0.1"
+    MARKETING_VERSION: "1.0"
     CURRENT_PROJECT_VERSION: "1"
     DEVELOPMENT_TEAM: ""
     CODE_SIGN_STYLE: Automatic
@@ -16,19 +16,21 @@ targets:
     platform: iOS
     sources:
       - Sources
+      - Resources
     info:
       path: Sources/Info.plist
       properties:
         CFBundleDisplayName: reBot Teleop
         UILaunchScreen: {}
+        ITSAppUsesNonExemptEncryption: false
         UIRequiredDeviceCapabilities: [arkit]
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         NSCameraUsageDescription: The camera tracks how you move the phone so the robot arm can follow it.
         NSLocalNetworkUsageDescription: reBot Teleop connects to the robot arm computer on your network.
         NSAppTransportSecurity:
-          NSAllowsArbitraryLoads: true
           NSAllowsLocalNetworking: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.ammarjmahmood.rebotteleop
         TARGETED_DEVICE_FAMILY: "1"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

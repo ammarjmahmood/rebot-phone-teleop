@@ -10,3 +10,4 @@ ios/**/*.xcodeproj/
 ios/**/DerivedData/
 ios/**/build/
 xcuserdata/
+ios/**/Sources/Info.plist

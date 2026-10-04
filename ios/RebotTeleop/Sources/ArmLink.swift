@@ -31,6 +31,8 @@ final class ArmLink: ObservableObject {
     @Published var view: String = UserDefaults.standard.string(forKey: "view") ?? "behind"
 
     private var task: URLSessionWebSocketTask?
+    private var retry: Task<Void, Never>?
+    private var wantConnected = false
     private var lastSent = Date.distantPast
     private var lastNote: String?
     private let haptic = UINotificationFeedbackGenerator()
@@ -63,33 +65,86 @@ final class ArmLink: ObservableObject {
 
     func forget() {
         disconnect()
+        wantConnected = false
         Keychain.delete("session")
         paired = false
     }
 
     func connect() {
+        retry?.cancel()
+        retry = nil
         guard let session = Keychain.read("session") else { return }
+        if Self.sessionExpired(session) {
+            expire("Pairing expired. Show a new pairing code on the computer and pair again.")
+            return
+        }
         var text = serverURL.trimmingCharacters(in: .whitespaces)
+        while text.hasSuffix("/") { text.removeLast() }
+        if !text.contains("://") { text = "http://" + text }
         text = text.replacingOccurrences(of: "https://", with: "wss://").replacingOccurrences(of: "http://", with: "ws://")
         guard let url = URL(string: text + "/ws/app") else {
             message = "Check the computer address"
             return
         }
         disconnect()
+        wantConnected = true
+        message = "Connecting…"
         var request = URLRequest(url: url)
+        request.timeoutInterval = 5
         request.setValue("Bearer " + session, forHTTPHeaderField: "Authorization")
         let task = URLSession.shared.webSocketTask(with: request)
         self.task = task
         task.resume()
-        connected = true
         receive(task)
     }
 
     func disconnect() {
+        retry?.cancel()
+        retry = nil
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
         connected = false
         moving = false
+    }
+
+    func pause() {
+        wantConnected = false
+        disconnect()
+    }
+
+    func resume() {
+        if paired && !connected { connect() }
+    }
+
+    private func expire(_ text: String) {
+        disconnect()
+        wantConnected = false
+        Keychain.delete("session")
+        paired = false
+        message = text
+    }
+
+    private func scheduleRetry() {
+        guard wantConnected, paired, retry == nil else { return }
+        retry = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard let self, self.wantConnected, !self.connected else { return }
+                self.retry = nil
+                self.connect()
+            }
+        }
+    }
+
+    private static func sessionExpired(_ session: String) -> Bool {
+        guard var value = session.split(separator: ".").first.map(String.init) else { return false }
+        value = value.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        while value.count % 4 != 0 { value += "=" }
+        guard let data = Data(base64Encoded: value),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let exp = object["exp"] as? Double else { return false }
+        return Date().timeIntervalSince1970 >= exp - 30
     }
 
     private func receive(_ task: URLSessionWebSocketTask) {
@@ -98,16 +153,39 @@ final class ArmLink: ObservableObject {
                 guard let self, self.task === task else { return }
                 switch result {
                 case .failure(let error):
+                    let wasConnected = self.connected
+                    let code = task.closeCode.rawValue
+                    let http = (task.response as? HTTPURLResponse)?.statusCode
+                    self.task = nil
                     self.connected = false
                     self.moving = false
-                    self.message = "Disconnected: \(error.localizedDescription)"
+                    if code == 4401 {
+                        self.expire("The computer no longer accepts this phone. Show a new pairing code and pair again.")
+                        return
+                    }
+                    if !wasConnected && (http == 401 || http == 403) {
+                        self.wantConnected = false
+                        self.message = "The computer refused this phone. Check the address, or Forget this computer and pair again."
+                        return
+                    }
+                    self.message = (wasConnected ? "Connection lost" : "Cannot reach the computer") + ". Retrying… (\(error.localizedDescription))"
+                    self.scheduleRetry()
                 case .success(let frame):
-                    if case .string(let text) = frame, let data = text.data(using: .utf8), let status = try? JSONDecoder().decode(ArmStatus.self, from: data) {
-                        self.status = status
-                        if status.note != self.lastNote, status.note != nil, self.moving {
-                            self.haptic.notificationOccurred(.warning)
+                    if case .string(let text) = frame, let data = text.data(using: .utf8) {
+                        let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+                        if object?["type"] as? String == "error" {
+                            self.message = object?["message"] as? String ?? "The computer reported an error"
+                        } else if let status = try? JSONDecoder().decode(ArmStatus.self, from: data) {
+                            if !self.connected {
+                                self.connected = true
+                                self.message = nil
+                            }
+                            self.status = status
+                            if status.note != self.lastNote, status.note != nil, self.moving {
+                                self.haptic.notificationOccurred(.warning)
+                            }
+                            self.lastNote = status.note
                         }
-                        self.lastNote = status.note
                     }
                     self.receive(task)
                 }
