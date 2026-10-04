@@ -1,7 +1,13 @@
 import asyncio
+import fnmatch
 import hmac
 import ipaddress
+import json
 import os
+import re
+import shutil
+import subprocess
+import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -38,13 +44,62 @@ def lan_addresses():
     return [(name, address) for _, name, address in sorted(found)]
 
 
+def tailscale_name():
+    try:
+        status = json.loads(subprocess.run(["tailscale", "status", "--json"], capture_output=True, text=True, timeout=5).stdout)
+        return status["Self"]["DNSName"].rstrip(".") or None
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+        return None
+
+
+class CloudflareTunnel:
+    def __init__(self, port):
+        self.port = port
+        self.process = None
+        self.url = None
+        self.status = "off"
+
+    def start(self):
+        binary = shutil.which("cloudflared") or str(Path.home() / ".local/bin/cloudflared")
+        if not Path(binary).exists():
+            self.status = "cloudflared is not installed; run scripts/setup_cloudflared.sh"
+            return
+        self.process = subprocess.Popen([binary, "tunnel", "--no-autoupdate", "--url", f"http://127.0.0.1:{self.port}"], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        self.status = "starting"
+        threading.Thread(target=self._read, daemon=True).start()
+
+    def _read(self):
+        for line in self.process.stderr:
+            match = re.search(r"https://[a-z0-9-]+\.trycloudflare\.com", line)
+            if match and not self.url:
+                self.url = match.group(0)
+                self.status = "running"
+        self.status = "stopped"
+
+    def stop(self):
+        if self.process and self.process.poll() is None:
+            self.process.terminate()
+
+
 def create_app(data_dir: Path, env_path: Path, node_factory=None, hebi_source=None):
     auth = Auth(env_path)
     port = int(os.environ.get("REBOT_TELEOP_PORT", "8080"))
     https_port = int(os.environ.get("REBOT_TELEOP_HTTPS_PORT", "9443"))
     lan = os.environ.get("REBOT_TELEOP_LAN") == "1"
     hosts = lan_addresses() if lan else []
-    allowed = {"localhost", "127.0.0.1", "testserver", *[address for _, address in hosts], *[h for h in auth.values.get("REBOT_TELEOP_ALLOWED_HOSTS", "").split(",") if h]}
+    extra = [h.strip() for h in (auth.values.get("REBOT_TELEOP_ALLOWED_HOSTS", "") + "," + os.environ.get("REBOT_TELEOP_ALLOWED_HOSTS", "")).split(",") if h.strip()]
+    allowed = {"localhost", "127.0.0.1", "testserver", *[address for _, address in hosts], *[h for h in extra if "*" not in h]}
+    patterns = [h for h in extra if "*" in h]
+    if lan:
+        name = tailscale_name()
+        if name:
+            allowed.add(name)
+    tunnel = CloudflareTunnel(port) if os.environ.get("REBOT_TELEOP_CLOUDFLARE") == "1" else None
+    if tunnel:
+        patterns.append("*.trycloudflare.com")
+
+    def host_allowed(hostname):
+        return hostname in allowed or any(fnmatch.fnmatch(hostname or "", pattern) for pattern in patterns)
 
     @asynccontextmanager
     async def lifespan(app):
@@ -56,7 +111,11 @@ def create_app(data_dir: Path, env_path: Path, node_factory=None, hebi_source=No
         }
         app.state.node = node
         await node.start()
+        if tunnel:
+            tunnel.start()
         yield
+        if tunnel:
+            tunnel.stop()
         await node.close()
 
     app = FastAPI(title="reBot teleop", lifespan=lifespan)
@@ -91,7 +150,7 @@ def create_app(data_dir: Path, env_path: Path, node_factory=None, hebi_source=No
 
     @app.middleware("http")
     async def boundaries(request, call_next):
-        if request.url.hostname not in allowed:
+        if not host_allowed(request.url.hostname):
             return JSONResponse({"detail": "Host is not configured"}, status_code=403)
         origin = request.headers.get("origin")
         if origin and urlparse(origin).netloc != request.url.netloc:
@@ -195,7 +254,9 @@ def create_app(data_dir: Path, env_path: Path, node_factory=None, hebi_source=No
         for name, address in hosts:
             url = f"http://{address}:{port}"
             addresses.append({"interface": name, "url": url, "quest": f"https://{address}:{https_port}/quest", "qr": segno.make(url, error="m").svg_data_uri(scale=5, border=2)})
-        return {"code": code, "expires_in": 300, "addresses": addresses, "lan": lan}
+        if tunnel and tunnel.url:
+            addresses.insert(0, {"interface": "Cloudflare", "url": tunnel.url, "quest": tunnel.url + "/quest", "qr": segno.make(tunnel.url, error="m").svg_data_uri(scale=5, border=2)})
+        return {"code": code, "expires_in": 300, "addresses": addresses, "lan": lan, "cloudflare": tunnel.status if tunnel else None}
 
     def controller(request, name):
         return node(request).controllers[name]
@@ -247,7 +308,7 @@ def create_app(data_dir: Path, env_path: Path, node_factory=None, hebi_source=No
 
     @app.websocket("/ws/app")
     async def app_socket(websocket: WebSocket):
-        if websocket.url.hostname not in allowed:
+        if not host_allowed(websocket.url.hostname):
             await websocket.close(code=4403)
             return
         origin = websocket.headers.get("origin")

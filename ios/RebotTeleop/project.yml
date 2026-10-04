@@ -28,6 +28,7 @@ targets:
         NSCameraUsageDescription: The camera tracks how you move the phone so the robot arm can follow it.
         NSLocalNetworkUsageDescription: reBot Teleop connects to the robot arm computer on your network.
         NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
           NSAllowsLocalNetworking: true
     settings:
       base:

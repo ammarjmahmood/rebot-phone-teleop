@@ -15,7 +15,7 @@ struct ContentView: View {
     @State private var stripAtTouch: Double = 1.0
     @State private var touching = false
     @State private var stripTouching = false
-    @AppStorage("slideGrip") private var slideGrip = true
+    @AppStorage("separateGrip") private var separateGrip = true
 
     private let views = [StandOption(id: "behind", title: "Behind arm"), StandOption(id: "front", title: "Facing arm"), StandOption(id: "left", title: "Arm's left"), StandOption(id: "right", title: "Arm's right")]
 
@@ -105,7 +105,7 @@ struct ContentView: View {
 
             VStack(spacing: 4) {
                 Toggle("Rotation follows phone", isOn: Binding(get: { link.tilt }, set: { link.setTilt($0) }))
-                Toggle("Thumb slide on the pad controls gripper", isOn: $slideGrip)
+                Toggle("Separate gripper strip", isOn: $separateGrip)
             }
             .font(.footnote)
             .padding(.horizontal, 12).padding(.vertical, 6)
@@ -113,7 +113,7 @@ struct ContentView: View {
 
             Spacer(minLength: 0)
             HStack(spacing: 10) {
-                gripperStrip
+                if separateGrip { gripperStrip }
                 movePad
             }
             .frame(height: 290)
@@ -164,7 +164,7 @@ struct ContentView: View {
                 RoundedRectangle(cornerRadius: 28).stroke(Color.green, lineWidth: 3)
                 VStack(spacing: 6) {
                     Text(touching ? "MOVING" : "THUMB HERE TO MOVE").font(.title3.bold())
-                    Text(slideGrip ? "Slide up to open, down to close" : "Gripper strip on the left").font(.footnote)
+                    Text(separateGrip ? "Gripper strip on the left" : "Slide up to open, down to close").font(.footnote)
                 }
                 .foregroundStyle(.white)
                 .multilineTextAlignment(.center)
@@ -179,7 +179,7 @@ struct ContentView: View {
                             link.moving = true
                             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                         }
-                        if slideGrip {
+                        if !separateGrip {
                             let delta = -Double(value.translation.height) / Double(max(geometry.size.height, 1))
                             link.grip = min(1, max(0, gripAtTouch + delta * 1.5))
                         }

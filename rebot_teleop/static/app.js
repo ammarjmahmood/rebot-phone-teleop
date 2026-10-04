@@ -32,7 +32,7 @@ $('release').onclick = act(async () => { if ($('release').dataset.armed) { delet
 $('remote').onchange = act(() => api('remote', {enabled: $('remote').checked}));
 $('pair').onclick = act(async () => {
   const r = await api('pair', {});
-  $('pairing').innerHTML = `<p class="code">${esc(r.code)}</p><p class="fine">Expires in 5 minutes. Enter it in the reBot Teleop app or the Quest page.</p>` + (r.lan ? r.addresses.map(a => `<p><img src="${a.qr}" alt="Address QR"><br><b>${esc(a.url)}</b> (${esc(a.interface)})<br>Quest: ${esc(a.quest)}</p>`).join('') : '<p class="fine">Start with --lan so phones and headsets can reach this computer.</p>');
+  $('pairing').innerHTML = `<p class="code">${esc(r.code)}</p><p class="fine">Expires in 5 minutes. Enter it in the reBot Teleop app or the Quest page.</p>` + (r.cloudflare && r.cloudflare !== 'running' ? `<p class="fine">Cloudflare tunnel: ${esc(r.cloudflare)}</p>` : '') + (r.lan || r.addresses.length ? r.addresses.map(a => `<p><img src="${a.qr}" alt="Address QR"><br><b>${esc(a.url)}</b> (${esc(a.interface)})<br>Quest: ${esc(a.quest)}</p>`).join('') : '<p class="fine">Start with --lan so phones and headsets can reach this computer.</p>');
 });
 $('hebi-start').onclick = act(() => api('hebi/start', {}));
 $('hebi-stop').onclick = act(() => api('hebi/stop', {}));

@@ -27,6 +27,8 @@ def main():
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--https-port", type=int, default=9443, help="HTTPS port for the Quest page")
     parser.add_argument("--lan", action="store_true", help="Listen on the network so phones and headsets can connect")
+    parser.add_argument("--cloudflare", action="store_true", help="Also publish an https address through a free Cloudflare quick tunnel")
+    parser.add_argument("--allow-host", action="append", default=[], help="Extra hostname the server may be reached by; wildcards like *.example.com work")
     parser.add_argument("--data", default=str(Path.home() / ".rebot-teleop"), help="Folder for settings, secrets and the local certificate")
     args = parser.parse_args()
     data = Path(args.data)
@@ -34,6 +36,10 @@ def main():
     print("Using CAN interface", os.environ["REBOT_TELEOP_CAN"])
     os.environ["REBOT_TELEOP_PORT"] = str(args.port)
     os.environ["REBOT_TELEOP_HTTPS_PORT"] = str(args.https_port)
+    if args.cloudflare:
+        os.environ["REBOT_TELEOP_CLOUDFLARE"] = "1"
+    if args.allow_host:
+        os.environ["REBOT_TELEOP_ALLOWED_HOSTS"] = ",".join(args.allow_host)
     host = "127.0.0.1"
     if args.lan:
         host = "0.0.0.0"

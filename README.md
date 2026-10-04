@@ -49,6 +49,12 @@ It finds the PEAK adapter automatically (on a Jetson the built in CAN controller
 1. Press **Power on and go to zero**. The arm can start in any pose inside its joint ranges; it enables holding position and drives slowly to zero. **Power on and hold here** enables without moving.
 2. Tick **Allow phone and headset motion** (lasts 15 minutes) and press **Show pairing code**. The page lists this computer's addresses, including a Tailscale address if it has one.
 
+### Reaching it from anywhere
+
+1. **Tailscale**: put the arm computer and the phone on the same tailnet and use `http://<tailscale ip>:8080` in the app. The app allows plain HTTP for this because Tailscale encrypts the traffic itself.
+2. **Cloudflare quick tunnel**: run `scripts/setup_cloudflared.sh` once, then start the server with `--cloudflare`. Show pairing code then lists an `https://….trycloudflare.com` address that works over mobile data with no VPN app. It is a public address, so pairing and the motion permission at the arm computer are what protect it, and it adds some latency compared with Tailscale. The address changes each time the server starts.
+3. Other names, such as your own domain behind a reverse proxy, can be allowed with `--allow-host arm.example.com` or `--allow-host "*.example.com"`.
+
 ### Running on a headless Jetson or another remote computer
 
 Power on, pairing and allowing motion are only accepted from the arm computer itself. From your laptop, open an SSH tunnel so the page counts as local:

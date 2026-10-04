@@ -38,7 +38,7 @@ The design follows TidyBot++ phone teleoperation (https://github.com/jimmyyhwu/t
 1. Pairing: the user enters the computer address and the eight digit code shown on the dashboard under Teleoperation, Show pairing code. `POST /api/session {"token": code}` returns JSON with a `session` value, stored in the Keychain.
 2. The app opens `ws://<address>/ws/app` with the header `Authorization: Bearer <session>`.
 3. The phone is held upright in portrait with the camera looking the way the user faces. The user picks where they stand relative to the arm and taps Start, which aligns forward to the camera's facing.
-4. Thumb on the large pad enables motion and, on first touch, takes control and aligns. The gripper follows the phone's movement and rotation relative to the pose when the thumb went down. Lifting the thumb stops the arm. The strip on the left sets the gripper without moving the arm; a toggle lets a thumb slide on the pad do it too.
+4. Thumb on the large pad enables motion and, on first touch, takes control and aligns. The gripper follows the phone's movement and rotation relative to the pose when the thumb went down. Lifting the thumb stops the arm. The Separate gripper strip toggle chooses between a strip on the left that sets the gripper without moving the arm (on) and a full width pad where sliding the thumb opens and closes the gripper while moving (off).
 5. Losing tracking or the connection stops the arm on the server within a quarter of a second.
 
 ### WebSocket protocol (do not change)

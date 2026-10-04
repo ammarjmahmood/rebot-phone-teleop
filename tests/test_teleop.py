@@ -347,3 +347,14 @@ def test_power_on_refuses_joint_far_outside_range(tmp_path):
             await node.close()
 
     asyncio.run(scenario())
+
+
+def test_extra_hosts_and_wildcards(tmp_path, monkeypatch):
+    monkeypatch.setenv("REBOT_TELEOP_ALLOWED_HOSTS", "arm.example.org,*.trycloudflare.com")
+    build, buses, holder = make_node(tmp_path / "data")
+    with TestClient(create_app(tmp_path / "data", tmp_path / ".env", node_factory=build)) as client:
+        assert client.get("/health", headers={"host": "arm.example.org"}).status_code == 200
+        assert client.get("/health", headers={"host": "quiet-river-1234.trycloudflare.com"}).status_code == 200
+        assert client.get("/health", headers={"host": "evil.example.com"}).status_code == 403
+        session = client.post("/api/session", json={}, headers={"host": "quiet-river-1234.trycloudflare.com"})
+        assert session.status_code in {401, 409, 422, 500} or not session.json().get("local")
