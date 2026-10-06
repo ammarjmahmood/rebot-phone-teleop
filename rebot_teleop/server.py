@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 import threading
+import urllib.request
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -99,7 +100,34 @@ class CloudflareTunnel:
             self.process.terminate()
 
 
-def create_app(data_dir: Path, env_path: Path, node_factory=None, hebi_source=None):
+class GistBookmark:
+    def __init__(self, token, gist_id, settings_path):
+        self.token = token
+        self.gist_id = gist_id
+        self.settings_path = settings_path
+        self.status = "off"
+
+    def _request(self, method, url, body):
+        request = urllib.request.Request(url, data=json.dumps(body).encode(), method=method, headers={"Authorization": f"Bearer {self.token}", "Accept": "application/vnd.github+json", "User-Agent": "rebot-teleop"})
+        with urllib.request.urlopen(request, timeout=15) as response:
+            return json.loads(response.read())
+
+    def publish(self, url):
+        content = f"# reBot teleop\n\nCurrent links, updated {time.strftime('%Y-%m-%d %H:%M')}:\n\n1. Meta Quest: [{url}/quest]({url}/quest)\n2. Control page from anywhere: [{url}]({url})\n\nPairing still needs a code from the arm computer.\n"
+        files = {"rebot-teleop.md": {"content": content}}
+        try:
+            if self.gist_id:
+                self._request("PATCH", f"https://api.github.com/gists/{self.gist_id}", {"files": files})
+            else:
+                created = self._request("POST", "https://api.github.com/gists", {"description": "reBot teleop links", "public": False, "files": files})
+                self.gist_id = created["id"]
+                self.settings_path.write_text(self.gist_id)
+            self.status = f"https://gist.github.com/{self.gist_id}"
+        except Exception as error:
+            self.status = f"gist update failed: {error}"
+
+
+def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, hebi_source=None):
     auth = Auth(env_path)
     port = int(os.environ.get("REBOT_TELEOP_PORT", "8080"))
     https_port = int(os.environ.get("REBOT_TELEOP_HTTPS_PORT", "9443"))
@@ -115,26 +143,47 @@ def create_app(data_dir: Path, env_path: Path, node_factory=None, hebi_source=No
     tunnel = CloudflareTunnel(port) if os.environ.get("REBOT_TELEOP_CLOUDFLARE") == "1" else None
     if tunnel:
         patterns.append("*.trycloudflare.com")
+    arms = arms or {"arm": os.environ.get("REBOT_TELEOP_CAN", "can0")}
+    gist_file = Path(data_dir) / "gist_id"
+    token = auth.values.get("REBOT_TELEOP_GIST_TOKEN", "")
+    gist = GistBookmark(token, gist_file.read_text().strip() if gist_file.exists() else auth.values.get("REBOT_TELEOP_GIST_ID", ""), gist_file) if tunnel and token else None
 
     def host_allowed(hostname):
         return hostname in allowed or any(fnmatch.fnmatch(hostname or "", pattern) for pattern in patterns)
 
+    def build(name, channel):
+        folder = Path(data_dir) if len(arms) == 1 else Path(data_dir) / "arms" / name
+        current = node_factory(name, channel) if node_factory else TeleopNode(folder, channel)
+        current.name = name
+        current.hand = name if name in {"left", "right"} else "right"
+        current.controllers = {
+            "app": TeleopController(current, "app", PushSource(), "align"),
+            "quest": TeleopController(current, "quest", PushSource(), "webxr"),
+            "hebi": TeleopController(current, "hebi", hebi_source or HebiSource(), "calibrated"),
+        }
+        return current
+
+    async def publish_gist():
+        for _ in range(120):
+            if tunnel.url:
+                await asyncio.to_thread(gist.publish, tunnel.url)
+                return
+            await asyncio.sleep(0.5)
+
     @asynccontextmanager
     async def lifespan(app):
-        node = node_factory() if node_factory else TeleopNode(data_dir, os.environ.get("REBOT_TELEOP_CAN", "can0"))
-        node.controllers = {
-            "app": TeleopController(node, "app", PushSource(), "align"),
-            "quest": TeleopController(node, "quest", PushSource(), "webxr"),
-            "hebi": TeleopController(node, "hebi", hebi_source or HebiSource(), "calibrated"),
-        }
-        app.state.node = node
-        await node.start()
+        app.state.nodes = {name: build(name, channel) for name, channel in arms.items()}
+        for current in app.state.nodes.values():
+            await current.start()
         if tunnel:
             tunnel.start()
+            if gist:
+                asyncio.create_task(publish_gist())
         yield
         if tunnel:
             tunnel.stop()
-        await node.close()
+        for current in app.state.nodes.values():
+            await current.close()
 
     app = FastAPI(title="reBot teleop", lifespan=lifespan)
 
@@ -163,8 +212,16 @@ def create_app(data_dir: Path, env_path: Path, node_factory=None, hebi_source=No
             raise HTTPException(403, "Do this at the arm computer")
         return principal
 
-    def node(request):
-        return request.app.state.node
+    def nodes(request):
+        return request.app.state.nodes
+
+    def pick(request, name):
+        everything = nodes(request)
+        if name is None and len(everything) == 1:
+            return next(iter(everything.values()))
+        if name not in everything:
+            raise ValueError("Choose an arm: " + ", ".join(everything))
+        return everything[name]
 
     @app.middleware("http")
     async def boundaries(request, call_next):
@@ -207,18 +264,28 @@ def create_app(data_dir: Path, env_path: Path, node_factory=None, hebi_source=No
     @app.get("/api/state")
     async def state(request: Request):
         principal = actor(request)
-        return {**node(request).status(), "principal": principal.model_dump()}
+        everything = nodes(request)
+        first = next(iter(everything.values()))
+        return {**first.status(), "arm": first.name, "arms": {name: current.status() for name, current in everything.items()}, "principal": principal.model_dump(), "gist": gist.status if gist else None}
+
+    async def body_of(request):
+        try:
+            return await request.json()
+        except ValueError:
+            return {}
 
     @app.post("/api/power")
     async def power(request: Request):
         device(request)
-        await node(request).power_on(bool((await request.json()).get("home")))
-        return node(request).status()
+        body = await body_of(request)
+        current = pick(request, body.get("arm"))
+        await current.power_on(bool(body.get("home")))
+        return current.status()
 
     @app.post("/api/home")
     async def home(request: Request):
         principal = actor(request, "operator")
-        current = node(request)
+        current = pick(request, (await body_of(request)).get("arm"))
         current.authorize(principal)
         active = next((c for c in current.controllers.values() if c.active), None)
         task = asyncio.create_task(current.home_with(active, principal) if active else current.home())
@@ -230,38 +297,42 @@ def create_app(data_dir: Path, env_path: Path, node_factory=None, hebi_source=No
     @app.post("/api/stop")
     async def stop(request: Request):
         actor(request, "operator")
-        current = node(request)
-        for controller in current.controllers.values():
-            await controller.stop("Stop pressed", keep_source=True)
-        await current.stop("Stop pressed", latch=True)
+        for current in nodes(request).values():
+            for controller in current.controllers.values():
+                await controller.stop("Stop pressed", keep_source=True)
+            await current.stop("Stop pressed", latch=True)
         return {"status": "stopped"}
 
     @app.post("/api/reset")
     async def reset(request: Request):
         device(request)
-        node(request).reset()
-        return node(request).status()
+        name = (await body_of(request)).get("arm")
+        for current in ([pick(request, name)] if name else nodes(request).values()):
+            current.reset()
+        return {"status": "reset"}
 
     @app.post("/api/release")
     async def release(request: Request):
         device(request)
-        await node(request).release_torque()
-        return node(request).status()
+        current = pick(request, (await body_of(request)).get("arm"))
+        await current.release_torque()
+        return current.status()
 
     @app.post("/api/gripper-range")
     async def gripper_range(request: Request):
         device(request)
-        return node(request).save_gripper((await request.json()).get("which"))
+        body = await body_of(request)
+        return pick(request, body.get("arm")).save_gripper(body.get("which"))
 
     @app.post("/api/remote")
     async def remote(request: Request):
         device(request)
-        enabled = bool((await request.json()).get("enabled"))
-        current = node(request)
-        current.remote_until = time.monotonic() + 900 if enabled else 0
-        if not enabled:
-            for controller in current.controllers.values():
-                await controller.stop("Phone motion revoked", keep_source=True)
+        enabled = bool((await body_of(request)).get("enabled"))
+        for current in nodes(request).values():
+            current.remote_until = time.monotonic() + 900 if enabled else 0
+            if not enabled:
+                for controller in current.controllers.values():
+                    await controller.stop("Phone motion revoked", keep_source=True)
         return {"enabled": enabled}
 
     @app.post("/api/pair")
@@ -275,16 +346,13 @@ def create_app(data_dir: Path, env_path: Path, node_factory=None, hebi_source=No
         for name, url, quest in routes:
             link = app_link(url, code)
             addresses.append({"interface": name, "label": route_label(name), "url": url, "quest": quest, "app_link": link, "qr": segno.make(link, error="m").svg_data_uri(scale=5, border=2)})
-        return {"code": code, "expires_in": 300, "addresses": addresses, "lan": lan, "cloudflare": tunnel.status if tunnel else None}
-
-    def controller(request, name):
-        return node(request).controllers[name]
+        return {"code": code, "expires_in": 300, "addresses": addresses, "lan": lan, "cloudflare": tunnel.status if tunnel else None, "gist": gist.status if gist else None}
 
     @app.post("/api/hebi/{action}")
     async def hebi(action: str, request: Request):
         principal = device(request)
-        body = await request.json()
-        current = controller(request, "hebi")
+        body = await body_of(request)
+        current = pick(request, body.get("arm")).controllers["hebi"]
         if action == "start":
             await current.start(principal)
         elif action == "stop":
@@ -295,34 +363,48 @@ def create_app(data_dir: Path, env_path: Path, node_factory=None, hebi_source=No
             parts = [part.strip() for part in str(body.get("address") or "").split(",") if part.strip()]
             for part in parts:
                 ipaddress.ip_address(part)
-            node(request).settings.set("hebi_addresses", parts)
+            current.node.settings.set("hebi_addresses", parts)
         elif action == "rotation":
             current.use_rotation = bool(body.get("on"))
         else:
             raise HTTPException(404)
         return current.status()
 
+    def quest_controllers(request):
+        return {current.hand: current.controllers["quest"] for current in nodes(request).values()}
+
     @app.post("/api/quest/{action}")
     async def quest(action: str, request: Request):
         principal = actor(request, "operator")
-        body = await request.json()
-        current = controller(request, "quest")
+        body = await body_of(request)
+        controllers = quest_controllers(request)
         if action == "start":
-            current.set_view(body.get("view", current.view))
-            current.use_rotation = bool(body.get("rotation", True))
-            await current.start(principal)
-            return current.status()
-        if current.owner not in {None, principal.id}:
+            started = []
+            for hand, current in controllers.items():
+                current.set_view(body.get("view", current.view))
+                current.use_rotation = bool(body.get("rotation", True))
+                await current.start(principal)
+                started.append(hand)
+            return {"hands": started}
+        if any(c.owner not in {None, principal.id} for c in controllers.values()):
             raise ValueError("Another device has control")
         if action == "stop":
-            await current.stop("Left VR")
-            return current.status()
+            for current in controllers.values():
+                await current.stop("Left VR")
+            return {"status": "stopped"}
         if action == "pose":
-            if not current.active:
+            hands = body.get("hands") or {"right": {key: body[key] for key in ("position", "quaternion_wxyz", "inputs") if key in body}}
+            if not any(c.active for c in controllers.values()):
                 raise ValueError("Start VR control first")
-            inputs = {str(k)[:4]: float(v) for k, v in dict(body.get("inputs", {})).items()}
-            current.source.push(body["position"], body["quaternion_wxyz"], {k: (int(v) if k.startswith("b") else v) for k, v in inputs.items()})
-            return {"note": current.note, "mode": current.mode}
+            notes = {}
+            for hand, sample in hands.items():
+                current = controllers.get(hand)
+                if current is None or not current.active or "position" not in sample:
+                    continue
+                inputs = {str(k)[:4]: float(v) for k, v in dict(sample.get("inputs", {})).items()}
+                current.source.push(sample["position"], sample["quaternion_wxyz"], {k: (int(v) if k.startswith("b") else v) for k, v in inputs.items()})
+                notes[hand] = current.note
+            return {"notes": notes, "note": next((n for n in notes.values() if n), None), "hands": list(controllers)}
         raise HTTPException(404)
 
     @app.websocket("/ws/app")
@@ -338,13 +420,18 @@ def create_app(data_dir: Path, env_path: Path, node_factory=None, hebi_source=No
         if principal is None or principal.role == "viewer":
             await websocket.close(code=4401)
             return
-        current_node = websocket.app.state.node
-        current = current_node.controllers["app"]
+        everything = websocket.app.state.nodes
+        chosen = {"name": next(iter(everything))}
         await websocket.accept()
         message_note = {"text": None}
 
+        def controller():
+            return everything[chosen["name"]].controllers["app"]
+
         async def report():
             while True:
+                current_node = everything[chosen["name"]]
+                current = controller()
                 status = current.status()
                 arm = current_node.arm
                 await websocket.send_json({
@@ -352,6 +439,7 @@ def create_app(data_dir: Path, env_path: Path, node_factory=None, hebi_source=No
                     "note": message_note["text"] or status["note"] or current_node.fault, "calibrated": status["ready"], "tilt": current.use_rotation, "view": current.view,
                     "torque": arm.torque, "fault": arm.fault, "remote": principal.local or time.monotonic() < current_node.remote_until,
                     "joints": [round(float(v) * 57.29578, 1) for v in arm.q], "gripper": round(float(arm.measured[6]) * 57.29578, 1), "phase": "TELEOP" if current_node.owner else "READY",
+                    "arm": chosen["name"], "arms": list(everything),
                 })
                 message_note["text"] = None
                 await asyncio.sleep(0.1)
@@ -363,6 +451,20 @@ def create_app(data_dir: Path, env_path: Path, node_factory=None, hebi_source=No
                 message = await websocket.receive_json()
                 kind = message.get("type") if isinstance(message, dict) else None
                 try:
+                    if kind == "arm":
+                        name = message.get("arm")
+                        if name not in everything:
+                            raise ValueError("Unknown arm")
+                        if name != chosen["name"]:
+                            previous = controller()
+                            if previous.owner == principal.id:
+                                await previous.stop("Switched arm", keep_source=True)
+                            chosen["name"] = name
+                            last_grip["value"] = None
+                            message_note["text"] = f"Now controlling {name}"
+                        continue
+                    current = controller()
+                    current_node = everything[chosen["name"]]
                     if kind == "pose":
                         mine = current.active and current.owner == principal.id
                         grip = message.get("grip")
@@ -373,8 +475,8 @@ def create_app(data_dir: Path, env_path: Path, node_factory=None, hebi_source=No
                             mine = True
                         if mine:
                             inputs = {"b1": 1 if message.get("move") else 0}
-                            if message.get("grip") is not None:
-                                inputs["grip"] = float(message["grip"])
+                            if grip is not None:
+                                inputs["grip"] = float(grip)
                             current.source.push([float(v) for v in message["p"]][:3], [float(v) for v in message["q"]][:4], inputs)
                     elif kind == "start":
                         current.use_rotation = bool(message.get("tilt", True))
@@ -398,8 +500,10 @@ def create_app(data_dir: Path, env_path: Path, node_factory=None, hebi_source=No
             pass
         finally:
             reporter.cancel()
-            if current.owner == principal.id:
-                await current.stop("Phone app disconnected")
+            for current_node in everything.values():
+                current = current_node.controllers["app"]
+                if current.owner == principal.id:
+                    await current.stop("Phone app disconnected")
 
     @app.get("/")
     async def index():

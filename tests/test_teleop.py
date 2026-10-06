@@ -75,15 +75,16 @@ def make_node(path):
 
     holder = {}
 
-    def build():
-        arm = RSArm(controller_factory=factory, gripper_open_deg=270.0, speed_deg_s=60.0)
-        node = TeleopNode(path, arm=arm)
+    def build(name="arm", channel="can0"):
+        arm = RSArm(channel, controller_factory=factory, gripper_open_deg=270.0, speed_deg_s=60.0)
+        node = TeleopNode(path if name == "arm" else path / name, arm=arm)
         node.controllers = {
             "app": TeleopController(node, "app", PushSource(), "align"),
             "quest": TeleopController(node, "quest", PushSource(), "webxr"),
             "hebi": TeleopController(node, "hebi", PushSource(), "calibrated"),
         }
         holder["node"] = node
+        holder[name] = node
         return node
 
     return build, buses, holder
@@ -376,3 +377,83 @@ def test_pairing_codes_open_the_app(tmp_path, monkeypatch):
         query = parse_qs(link.query)
         assert query["url"] == ["http://100.89.54.6:8080"] and query["code"] == [result["code"]]
         assert result["addresses"][1]["qr"].startswith("data:image/svg+xml")
+
+
+def pose_arm(node, degrees=(0, 40, 60, 0, 20, 0)):
+    node.arm.enabled = True
+    node.arm.write(np.radians(degrees), 0.02)
+    for _ in range(300):
+        if not node.arm.moving:
+            break
+        time.sleep(0.02)
+    node.arm.stop()
+
+
+def test_two_arms_quest_hands_app_switch_and_stop(tmp_path):
+    build, buses, holder = make_node(tmp_path / "data")
+    arms = {"left": "can1", "right": "can2"}
+    with TestClient(create_app(tmp_path / "data", tmp_path / ".env", arms=arms, node_factory=build)) as client:
+        session = client.post("/api/session", json={}).json()
+        state = client.get("/api/state").json()
+        assert set(state["arms"]) == {"left", "right"}
+        assert client.post("/api/power", json={"home": False}).status_code == 409
+        for name in arms:
+            assert client.post("/api/power", json={"arm": name, "home": False}).status_code == 200
+        left, right = holder["left"], holder["right"]
+        assert left.arm.channel == "can1" and right.arm.channel == "can2"
+        pose_arm(left)
+        pose_arm(right)
+        left_start = left.kin.pose(left.arm.command[:6])[0]
+        right_start = right.kin.pose(right.arm.command[:6])[0]
+        assert client.post("/api/quest/start", json={"view": "behind"}).json()["hands"] == ["left", "right"]
+        still = {"position": [0, 1.2, 0], "quaternion_wxyz": [1, 0, 0, 0]}
+        for _ in range(4):
+            client.post("/api/quest/pose", json={"hands": {"left": {**still, "inputs": {"b1": 1}}, "right": {**still, "inputs": {"b1": 0}}}})
+            time.sleep(0.03)
+        for step in range(1, 11):
+            client.post("/api/quest/pose", json={"hands": {"left": {"position": [0, 1.2 + 0.004 * step, 0], "quaternion_wxyz": [1, 0, 0, 0], "inputs": {"b1": 1}}, "right": {"position": [0, 1.2 + 0.004 * step, 0], "quaternion_wxyz": [1, 0, 0, 0], "inputs": {"b1": 0}}}})
+            time.sleep(0.03)
+        for _ in range(100):
+            client.post("/api/quest/pose", json={"hands": {"left": {"position": [0, 1.24, 0], "quaternion_wxyz": [1, 0, 0, 0], "inputs": {"b1": 1}}, "right": {**still, "inputs": {"b1": 0}}}})
+            time.sleep(0.02)
+            if not left.arm.moving:
+                break
+        assert (left.kin.pose(left.arm.command[:6])[0] - left_start) == pytest.approx([0, 0, 0.04], abs=0.006)
+        assert np.allclose(right.kin.pose(right.arm.command[:6])[0], right_start, atol=1e-4)
+        client.post("/api/quest/stop", json={})
+        client.post("/api/remote", json={"enabled": True})
+        headers = {"authorization": "Bearer " + session["session"]}
+        with client.websocket_connect("/ws/app", headers=headers) as socket:
+            status = socket.receive_json()
+            assert status["arm"] == "left" and status["arms"] == ["left", "right"]
+            socket.send_json({"type": "pose", "p": [0, 1, 0], "q": yaw(0.0), "move": True})
+            time.sleep(0.1)
+            assert left.controllers["app"].active and not right.controllers["app"].active
+            socket.send_json({"type": "arm", "arm": "right"})
+            socket.send_json({"type": "pose", "p": [0, 1, 0], "q": yaw(0.0), "move": True})
+            time.sleep(0.15)
+            assert right.controllers["app"].active and not left.controllers["app"].active
+            for _ in range(5):
+                status = socket.receive_json()
+            assert status["arm"] == "right"
+        assert client.post("/api/stop", json={}).status_code == 200
+        assert left.estopped and right.estopped
+
+
+def test_gist_bookmark_creates_then_updates(tmp_path):
+    from rebot_teleop.server import GistBookmark
+    calls = []
+
+    def fake(method, url, body):
+        calls.append((method, url, body))
+        return {"id": "abc123"}
+
+    gist = GistBookmark("token", "", tmp_path / "gist_id")
+    gist._request = fake
+    gist.publish("https://quiet-river-1234.trycloudflare.com")
+    assert calls[0][0] == "POST" and calls[0][2]["public"] is False
+    assert "https://quiet-river-1234.trycloudflare.com/quest" in calls[0][2]["files"]["rebot-teleop.md"]["content"]
+    assert (tmp_path / "gist_id").read_text() == "abc123"
+    gist.publish("https://other-name-99.trycloudflare.com")
+    assert calls[1][0] == "PATCH" and calls[1][1].endswith("/gists/abc123")
+    assert gist.status == "https://gist.github.com/abc123"

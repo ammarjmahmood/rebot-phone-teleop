@@ -16,6 +16,8 @@ struct ArmStatus: Decodable {
     var gripper: Double?
     var phase: String = ""
     var view: String?
+    var arm: String?
+    var arms: [String]?
 }
 
 @MainActor
@@ -217,6 +219,7 @@ final class ArmLink: ObservableObject {
     func start() { send(["type": "start", "tilt": tilt, "view": view]) }
     func setView(_ value: String) { view = value; UserDefaults.standard.set(value, forKey: "view"); send(["type": "view", "view": value]) }
     func align() { send(["type": "align"]) }
+    func selectArm(_ name: String) { moving = false; send(["type": "arm", "arm": name]) }
     func stop() { moving = false; send(["type": "stop"]) }
     func home() { moving = false; send(["type": "home"]) }
     func setTilt(_ on: Bool) { tilt = on; send(["type": "tilt", "on": on]) }

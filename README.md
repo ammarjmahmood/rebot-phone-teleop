@@ -55,6 +55,26 @@ It finds the PEAK adapter automatically (on a Jetson the built in CAN controller
 2. **Cloudflare quick tunnel**: run `scripts/setup_cloudflared.sh` once, then start the server with `--cloudflare`. Show pairing code then lists an `https://….trycloudflare.com` address that works over mobile data with no VPN app. It is a public address, so pairing and the motion permission at the arm computer are what protect it, and it adds some latency compared with Tailscale. The address changes each time the server starts.
 3. Other names, such as your own domain behind a reverse proxy, can be allowed with `--allow-host arm.example.com` or `--allow-host "*.example.com"`.
 
+### Two arms
+
+Give each arm its own PEAK adapter and name them when starting:
+
+```sh
+.venv/bin/python -m rebot_teleop --lan --arm left=can1 --arm right=can2
+```
+
+`--list-can` shows each CAN interface with its USB port so you can tell the adapters apart; interface numbers follow plug order, so keep each adapter in the same USB port. Every arm gets its own card on the control page (power, home, release, gripper range), its own safety monitor and its own settings. In the iPhone app a Left / Right switch picks the arm you drive; switching hands control over instantly. On the Quest the left controller drives the left arm and the right controller the right arm. Stop stops both. The arms do not know about each other, so mount them far enough apart that they cannot collide.
+
+### Quest bookmark with a GitHub gist
+
+With `--cloudflare`, the server can write the current tunnel address into a secret GitHub gist each time it starts, so the Quest only needs one bookmark. Create a GitHub token that can only manage gists (Settings, Developer settings, fine grained token or classic token with the `gist` scope) and add it to `~/.rebot-teleop/.env` on the arm computer:
+
+```
+REBOT_TELEOP_GIST_TOKEN="<token>"
+```
+
+On the first start the server creates the gist and shows its link on the control page under Phone and headset access; later starts update the same gist. Open that gist on the Quest and tap the Quest link.
+
 ### Running on a headless Jetson or another remote computer
 
 Power on, pairing and allowing motion are only accepted from the arm computer itself. From your laptop, open an SSH tunnel so the page counts as local:

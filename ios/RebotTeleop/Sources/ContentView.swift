@@ -103,6 +103,17 @@ struct ContentView: View {
                 .buttonStyle(.bordered)
             }
 
+            if let arms = link.status.arms, arms.count > 1 {
+                Picker("Arm", selection: Binding(get: { link.status.arm ?? arms[0] }, set: { link.selectArm($0) })) {
+                    ForEach(arms, id: \.self) { name in
+                        Text(name.capitalized).tag(name)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .padding(6)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            }
+
             VStack(spacing: 4) {
                 Toggle("Rotation follows phone", isOn: Binding(get: { link.tilt }, set: { link.setTilt($0) }))
                 Toggle("Separate gripper strip", isOn: $separateGrip)

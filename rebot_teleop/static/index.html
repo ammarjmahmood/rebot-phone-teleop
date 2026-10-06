@@ -9,39 +9,24 @@
 <header><h1>reBot teleop</h1><span id="connection">Connecting</span><button class="stop" id="stop">STOP</button></header>
 <main>
 <div class="notice" id="fault" hidden></div>
-<section class="card">
-<h2>Arm</h2>
-<p id="arm-status">Checking</p>
-<div class="joints" id="joints"></div>
-<div class="row local">
-<button class="primary" id="power-home">Power on and go to zero</button>
-<button id="power-hold">Power on and hold here</button>
-<button id="home">Home</button>
-<button id="reset" hidden>Reset stop</button>
-<button class="danger" id="release">Release torque</button>
-</div>
-<p class="fine">Release torque turns the motors off and the arm can drop, so support it first.</p>
-</section>
+<div id="arms"></div>
 <section class="card local">
 <h2>Phone and headset access</h2>
 <label class="check"><input type="checkbox" id="remote"> Allow phone and headset motion for 15 minutes</label>
 <button id="pair">Show pairing code</button>
 <div id="pairing"></div>
+<p class="fine" id="gist"></p>
 </section>
 <section class="card local">
 <h2>HEBI Mobile I/O</h2>
 <p class="fine">Hold Move (B1) to move. A3 sets the gripper while moving, B2 opens, B3 closes, B8 homes. Calibrate once by moving the phone about 10 cm up, forward and left while holding Move.</p>
 <p id="hebi-status">Off</p>
+<label>Arm for HEBI <select id="hebi-arm"></select></label>
 <div class="row"><button class="primary" id="hebi-start">Start HEBI</button><button id="hebi-stop">Stop HEBI</button></div>
 <div class="row"><button data-cal="up">Calibrate up</button><button data-cal="forward">Calibrate forward</button><button data-cal="left">Calibrate left</button></div>
 <label>Phone Tailscale address, only when away from this WiFi <input id="hebi-address" placeholder="100.x.y.z"></label><button id="hebi-address-save">Save address</button>
 </section>
-<section class="card local">
-<h2>Gripper range</h2>
-<p class="fine">Open or close the gripper fully with the phone app, then save that position.</p>
-<p id="gripper">Gripper</p>
-<div class="row"><button id="save-closed">Save as fully closed</button><button id="save-open">Save as fully open</button></div>
-</section>
+
 </main>
 <div id="toast" hidden></div>
 <script src="/static/app.js"></script>

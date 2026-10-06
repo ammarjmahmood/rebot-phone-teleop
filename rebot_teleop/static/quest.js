@@ -49,24 +49,34 @@ async function endVR() {
   try { await api('quest/stop', {}); status('VR control stopped. The arm is holding.'); } catch (error) { status(error.message); }
   stopping = false;
 }
+let lastNotes = {};
 function onFrame(time, frame) {
   const session = frame.session;
   session.requestAnimationFrame(onFrame);
   gl.bindFramebuffer(gl.FRAMEBUFFER, session.renderState.baseLayer.framebuffer);
   gl.clearColor(0, 0, 0, 0);
   gl.clear(gl.COLOR_BUFFER_BIT);
-  const right = [...session.inputSources].find(s => s.handedness === 'right' && s.gripSpace);
-  if (!right || sending || time - lastSent < 22) return;
-  const pose = frame.getPose(right.gripSpace, refSpace);
-  if (!pose) return;
-  const pad = right.gamepad;
-  const button = i => pad && pad.buttons[i] ? pad.buttons[i] : {pressed: false, value: 0};
-  const p = pose.transform.position, q = pose.transform.orientation;
+  if (sending || time - lastSent < 22) return;
+  const hands = {}, pads = {};
+  for (const source of session.inputSources) {
+    if (!source.gripSpace || (source.handedness !== 'left' && source.handedness !== 'right')) continue;
+    const pose = frame.getPose(source.gripSpace, refSpace);
+    if (!pose) continue;
+    const pad = source.gamepad;
+    const button = i => pad && pad.buttons[i] ? pad.buttons[i] : {pressed: false, value: 0};
+    const p = pose.transform.position, q = pose.transform.orientation;
+    hands[source.handedness] = {position: [p.x, p.y, p.z], quaternion_wxyz: [q.w, q.x, q.y, q.z], inputs: {b1: button(1).value > 0.5 ? 1 : 0, grip: 1 - button(0).value, b8: button(5).pressed ? 1 : 0}};
+    pads[source.handedness] = pad;
+  }
+  if (!Object.keys(hands).length) return;
   sending = true;
   lastSent = time;
-  api('quest/pose', {position: [p.x, p.y, p.z], quaternion_wxyz: [q.w, q.x, q.y, q.z], inputs: {b1: button(1).value > 0.5 ? 1 : 0, grip: 1 - button(0).value, b8: button(5).pressed ? 1 : 0}}).then(result => {
-    if (result.note && result.note !== lastNote && pad && pad.hapticActuators && pad.hapticActuators[0]) pad.hapticActuators[0].pulse(0.6, 80).catch(() => {});
-    lastNote = result.note;
+  api('quest/pose', {hands}).then(result => {
+    for (const [hand, note] of Object.entries(result.notes || {})) {
+      const pad = pads[hand];
+      if (note && note !== lastNotes[hand] && pad && pad.hapticActuators && pad.hapticActuators[0]) pad.hapticActuators[0].pulse(0.6, 80).catch(() => {});
+      lastNotes[hand] = note;
+    }
   }).catch(error => {
     status(error.message);
     if (/Start VR control/.test(error.message) && xrSession) xrSession.end();
