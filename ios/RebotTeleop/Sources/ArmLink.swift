@@ -55,11 +55,19 @@ final class ArmLink: ObservableObject {
         }
     }
 
+    private var baseURL: String {
+        var text = serverURL.trimmingCharacters(in: .whitespaces)
+        while text.hasSuffix("/") { text.removeLast() }
+        if !text.contains("://") { text = "http://" + text }
+        return text
+    }
+
     func pair(code: String) async {
-        guard let url = URL(string: serverURL.trimmingCharacters(in: .whitespaces) + "/api/session") else {
+        guard let url = URL(string: baseURL + "/api/session"), url.host != nil else {
             message = "Check the computer address"
             return
         }
+        serverURL = baseURL
         UserDefaults.standard.set(serverURL, forKey: "serverURL")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -96,10 +104,7 @@ final class ArmLink: ObservableObject {
             expire("Pairing expired. Show a new pairing code on the computer and pair again.")
             return
         }
-        var text = serverURL.trimmingCharacters(in: .whitespaces)
-        while text.hasSuffix("/") { text.removeLast() }
-        if !text.contains("://") { text = "http://" + text }
-        text = text.replacingOccurrences(of: "https://", with: "wss://").replacingOccurrences(of: "http://", with: "ws://")
+        let text = baseURL.replacingOccurrences(of: "https://", with: "wss://").replacingOccurrences(of: "http://", with: "ws://")
         guard let url = URL(string: text + "/ws/app") else {
             message = "Check the computer address"
             return

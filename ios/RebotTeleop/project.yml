@@ -32,7 +32,6 @@ targets:
         NSLocalNetworkUsageDescription: reBot Teleop connects to the robot arm computer on your network.
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
-          NSAllowsLocalNetworking: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.ammarjmahmood.rebotteleop
