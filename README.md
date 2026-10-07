@@ -108,7 +108,19 @@ Open HEBI Mobile I/O on the phone on the same network, press **Start HEBI** on t
 
 ### Meta Quest
 
-Open the Quest link shown under Show pairing code (`https://<computer>:9443/quest`) in the Quest browser, accept the local certificate warning once, enter the code, choose where you stand and press Enter VR.
+On the control page of the arm computer:
+
+1. Press **Power on and go to zero**.
+2. Tick **Allow phone and headset motion for 15 minutes**.
+3. Press **Show pairing code** and note the eight digit code (single use, five minutes).
+
+On the Quest:
+
+1. Open the Quest browser at the Quest address listed under Show pairing code. With `--cloudflare` this is `https://<name>.trycloudflare.com/quest`, which has a valid certificate and works from anywhere. On the same network you can use `https://<computer>:9443/quest` and accept the local certificate warning once (Advanced, Proceed).
+2. Enter the pairing code and choose where you stand relative to the arm. Behind the arm, facing the same way, is the most intuitive.
+3. Face that way and press **Enter VR**, allowing passthrough so you see the real arm.
+
+Controls: hold a **grip** button and that arm copies your hand's movement and rotation from the moment you squeezed; release to stop and the arm holds. The **trigger** closes that arm's gripper. **B** homes the right arm and **Y** the left. With one arm, use the right controller. Exit VR or press **Stop VR control** to hand control back. Start with small, slow moves and keep the control page's STOP button within reach.
 
 ## How it works
 
