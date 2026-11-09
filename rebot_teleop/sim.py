@@ -30,6 +30,8 @@ CAMERA_SIZE = (320, 240)
 CAMERA_FOV_DEG = 70.0
 CAMERA_EVERY_S = 0.1
 CAMERA_IDLE_S = 3.0
+VIEW_SIZE = (640, 480)
+VIEW_EVERY_S = 0.066
 
 
 def find_meshes():
@@ -131,6 +133,10 @@ class SimWorld:
         self.thread = None
         self.error = None
         self.time = 0.0
+        self.view_params = None
+        self.view_wanted = 0.0
+        self.view_at = 0.0
+        self.view = None
 
     def add_arm(self, channel, mount, start=None):
         with self.lock:
@@ -329,6 +335,7 @@ class SimWorld:
 
     def _cameras(self, p):
         now = time.monotonic()
+        self._overview(p, now)
         for arm in list(self.arms.values()):
             if arm.body is None or arm.camera_link is None or now - arm.camera_wanted > CAMERA_IDLE_S or now - arm.camera_at < CAMERA_EVERY_S:
                 continue
@@ -344,6 +351,30 @@ class SimWorld:
             with self.lock:
                 arm.frame = (now, pixels)
                 arm.camera_at = now
+
+    def _overview(self, p, now):
+        if self.view_params is None or now - self.view_wanted > CAMERA_IDLE_S or now - self.view_at < VIEW_EVERY_S:
+            return
+        params = self.view_params
+        yaw, pitch, distance, height = params
+        view = p.computeViewMatrixFromYawPitchRoll([0.0, 0.0, height], distance, yaw, pitch, 0.0, 2)
+        width, tall = VIEW_SIZE
+        projection = p.computeProjectionMatrixFOV(50.0, width / tall, 0.05, 10.0)
+        renderer = p.ER_BULLET_HARDWARE_OPENGL if self.gui else p.ER_TINY_RENDERER
+        image = p.getCameraImage(width, tall, view, projection, renderer=renderer)
+        pixels = np.reshape(np.asarray(image[2], dtype=np.uint8), (tall, width, 4))[:, :, :3].copy()
+        with self.lock:
+            self.view = (now, params, pixels)
+            self.view_at = now
+
+    def overview_frame(self, yaw, pitch, distance, height):
+        params = (float(np.clip(yaw, -720, 720)), float(np.clip(pitch, -89, 89)), float(np.clip(distance, 0.3, 5.0)), float(np.clip(height, 0.0, 2.0)))
+        with self.lock:
+            self.view_params = params
+            self.view_wanted = time.monotonic()
+            if self.view and self.view[1] == params:
+                return self.view[0], self.view[2]
+            return None
 
     def camera_frame(self, channel):
         with self.lock:

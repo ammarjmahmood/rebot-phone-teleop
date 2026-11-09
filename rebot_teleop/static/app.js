@@ -35,6 +35,7 @@ function render() {
   $('hebi-status').textContent = !h.active ? 'Off' : h.calibrating ? 'Calibrating ' + h.calibrating + ': hold Move and move the phone' : h.source !== 'streaming' ? 'Looking for the HEBI app' : !h.ready ? 'Calibrate up, forward and left' : (h.note || (h.mode ? 'Moving' : 'Ready, hold Move'));
   $('gist').textContent = s.gist ? 'Quest bookmark: ' + s.gist : '';
   renderCameras(s);
+  renderView(s);
 }
 async function poll() { try { state = await api('state'); $('connection').textContent = 'Connected'; render(); } catch (error) { $('connection').textContent = 'Connection lost'; } }
 $('stop').onclick = act(() => api('stop', {}));
@@ -101,3 +102,33 @@ $('hebi-stop').onclick = act(() => api('hebi/stop', {arm: $('hebi-arm').value ||
 document.querySelectorAll('[data-cal]').forEach(el => el.onclick = act(() => api('hebi/calibrate', {arm: $('hebi-arm').value || undefined, step: el.dataset.cal})));
 $('hebi-address-save').onclick = act(() => api('hebi/address', {arm: $('hebi-arm').value || undefined, address: $('hebi-address').value}));
 (async () => { try { await api('session', {}); } catch {} await poll(); setInterval(poll, 500); })();
+
+const view = {yaw: 120, pitch: -15, distance: 1.9, height: 0.95, on: true, src: '', drag: null};
+const VIEWS = {front: [90, -10], left: [180, -12], right: [0, -12], back: [270, -12], top: [90, -80]};
+function viewUrl() { return `/api/sim/view.mjpg?yaw=${view.yaw.toFixed(0)}&pitch=${view.pitch.toFixed(0)}&distance=${view.distance.toFixed(2)}&height=${view.height}`; }
+function renderView(s) {
+  $('view-card').hidden = !s.sim;
+  if (!s.sim) return;
+  const src = view.on ? viewUrl() : '';
+  if (src !== view.src) { view.src = src; if (src) $('sim-view').src = src; else $('sim-view').removeAttribute('src'); }
+  $('view-toggle').textContent = view.on ? 'Pause view' : 'Show view';
+}
+let viewTimer;
+function updateView() { clearTimeout(viewTimer); viewTimer = setTimeout(() => state && renderView(state), 120); }
+$('sim-view').addEventListener('pointerdown', event => { view.drag = {x: event.clientX, y: event.clientY, yaw: view.yaw, pitch: view.pitch}; event.target.setPointerCapture(event.pointerId); });
+$('sim-view').addEventListener('pointermove', event => {
+  if (!view.drag) return;
+  view.yaw = view.drag.yaw - (event.clientX - view.drag.x) * 0.5;
+  view.pitch = Math.max(-85, Math.min(30, view.drag.pitch - (event.clientY - view.drag.y) * 0.4));
+  updateView();
+});
+['pointerup', 'pointercancel'].forEach(name => $('sim-view').addEventListener(name, () => { view.drag = null; }));
+document.addEventListener('click', event => {
+  const preset = event.target.closest('[data-view]');
+  const zoom = event.target.closest('[data-zoom]');
+  if (preset) [view.yaw, view.pitch] = VIEWS[preset.dataset.view];
+  else if (zoom) view.distance = Math.max(0.5, Math.min(4, view.distance * Number(zoom.dataset.zoom)));
+  else if (event.target.id === 'view-toggle') view.on = !view.on;
+  else return;
+  updateView();
+});

@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 from rebot_teleop.kinematics import Kinematics, mount_placement
 from rebot_teleop.node import ASSETS, HOMES_DEG, KEEP_OUT, MOUNTS
-from rebot_teleop.policy import ArmView, CommandError, plan
+from rebot_teleop.policy import ArmView, CommandError, plan, target
 from rebot_teleop.rs_arm import LIMITS_DEG
 
 
@@ -77,3 +77,29 @@ def test_moves_into_the_post_are_refused():
 def test_unknown_words_explain_what_works():
     with pytest.raises(CommandError, match="raise left hand"):
         plan("do a backflip", arms())
+
+
+def test_direct_moves_by_joints_and_tip_position():
+    views = arms()
+    joints = target(views["left"], {"joints_deg": [-40.0, 110.0, 35.0, 80.0, 50.0, 0.0], "gripper_m": 0.08})
+    assert np.allclose(np.degrees(joints.q), [-40.0, 110.0, 35.0, 80.0, 50.0, 0.0])
+    assert joints.width == pytest.approx(0.05)
+    for name, y in (("left", 0.06), ("right", -0.06)):
+        move = target(views[name], {"tip_xyz": [0.30, y, 0.80]})
+        assert np.allclose(views[name].kin.pose(move.q)[0], [0.30, y, 0.80], atol=0.005)
+    views["left"].q = np.radians([-40.0, 110.0, 35.0, 84.5, 50.0, 0.0])
+    lifted = target(views["left"], {"tip_delta": [0.0, 0.0, 0.04]})
+    start = views["left"].kin.pose(views["left"].q)[0]
+    assert np.allclose(views["left"].kin.pose(lifted.q)[0], start + [0.0, 0.0, 0.04], atol=0.005)
+
+
+def test_direct_moves_refuse_the_post_bad_input_and_unreachable_points():
+    views = arms()
+    with pytest.raises(CommandError, match="post"):
+        target(views["right"], {"tip_xyz": [0.02, 0.0, 0.7]})
+    with pytest.raises(CommandError, match="cannot reach"):
+        target(views["left"], {"tip_xyz": [1.5, 0.2, 0.8]})
+    with pytest.raises(CommandError, match="joints_deg"):
+        target(views["left"], {"joints_deg": [0, 0, 0]})
+    with pytest.raises(CommandError, match="Give"):
+        target(views["left"], {})

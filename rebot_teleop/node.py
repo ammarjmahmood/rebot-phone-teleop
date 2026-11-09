@@ -280,5 +280,9 @@ class TeleopNode:
             **arm, "owner": self.owner, "estopped": self.estopped, "fault": self.fault or arm["fault"], "arm_fault": arm["fault"], "homing": bool(self.motion and not self.motion.done()),
             "joints_deg": [round(math.degrees(v), 1) for v in self.arm.q], "remote_seconds": max(0, round(self.remote_until - time.monotonic())),
             "controllers": {name: controller.status() for name, controller in self.controllers.items()}, "mount": self.mount, "home_deg": [round(math.degrees(v), 1) for v in self.home_q],
-            "hand_guide": self.hand_guide, "tip_xyz": [round(float(v), 4) for v in self.kin.pose(self.arm.q)[0]],
+            "hand_guide": self.hand_guide, "ready": bool(arm["connected"] and arm["torque"] and not arm["fault"] and not self.estopped and not self.fault), **self.tip_status(),
         }
+
+    def tip_status(self):
+        position, rotation = self.kin.pose(self.arm.q)
+        return {"tip_xyz": [round(float(v), 4) for v in position], "tip_rotation": np.round(rotation, 4).tolist()}

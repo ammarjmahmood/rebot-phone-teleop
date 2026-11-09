@@ -227,6 +227,70 @@ The Commands box on the dashboard and `POST /api/command {"text": ...}` turn sho
 
 Each arm card area gets a Wrist cameras panel. In `--sim` the picture is rendered from the camera on the UVC32 mount. On hardware pass the USB devices, for example `--camera left=/dev/video0 --camera right=/dev/video2`, and install OpenCV with `pip install .[camera]`. The stream is MJPEG at `/api/camera/left.mjpg`, with a single frame at `/api/camera/left.jpg`, and needs the same pairing as the dashboard. A camera is opened only while someone is watching.
 
+### Watching the simulation from anywhere
+
+The dashboard has a Simulation view card: a live picture of the whole simulated robot, rendered on the computer running `--sim`. Drag it to look around, or use Face, Left side, Right side, Back and Top. It works on a phone, so you do not need to be at the computer:
+
+1. Start the simulator with `--lan`, for example `python -m rebot_teleop --sim --lan --data ~/.rebot-teleop-sim`.
+2. **Tailscale** (phone on the same tailnet): open `http://<computer tailscale name or ip>:8080` on the phone.
+   **Anywhere else**: add `--cloudflare` and open the `https://….trycloudflare.com` link it prints.
+3. At the computer press Show pairing code and pair the phone. To send commands from the phone, also tick Allow phone and headset motion.
+
+The picture is also at `/api/sim/view.jpg` and `/api/sim/view.mjpg` with `yaw`, `pitch`, `distance` and `height` query parameters; yaw 90 looks at the face.
+
+### VR in the simulation
+
+Start the simulator with `--lan` on Tailscale or with `--cloudflare`, open the Quest page from the pairing code on the headset, and the Quest controllers drive the simulated arms exactly as they would drive the real ones. Watch the 3D window or the Simulation view while you move. `scripts/validate_sim.py` runs the same checks without a headset.
+
+### Agents and code as policy
+
+Claude Code, Codex, Cursor, Antigravity, Gemini CLI and any other MCP client can drive the robot through `rebot_teleop.mcp_server`, in the style of Code as Policies: the agent reads the state, looks through the cameras, then writes a short Python policy against a `robot` object and runs it. Install the extra once with `pip install .[agent]`.
+
+Tools: `get_state`, `move_arm` (joint angles, a tip position or a tip offset, with a dry run), `set_gripper`, `say` (the same phrases as the Commands box), `look` (wrist cameras or the overview picture, returned as an image), `run_policy` (Python, in its own process with a time limit; the arms stop if it fails), `home`, `stop` and `robot_api`. Every move goes through the joint limits, the floor check and the keep out boxes around the post and head before anything moves, and a refused move says why.
+
+Agents only move the simulator. Against a server on real arms the tools refuse unless the person at the robot starts the MCP server with `REBOT_ALLOW_REAL=1`, and even then they cannot power the arms on; that stays a button on the dashboard.
+
+Start the simulator first, then connect your agent with one of these. Use the full path to this repo's `.venv/bin/python`.
+
+```bash
+claude mcp add rebot -- /path/to/rebot-phone-teleop/.venv/bin/python -m rebot_teleop.mcp_server
+```
+
+Codex, in `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.rebot]
+command = "/path/to/rebot-phone-teleop/.venv/bin/python"
+args = ["-m", "rebot_teleop.mcp_server"]
+tool_timeout_sec = 200
+```
+
+Cursor (`~/.cursor/mcp.json`), Antigravity (MCP servers, raw config) and Gemini CLI (`~/.gemini/settings.json`) take the same shape:
+
+```json
+{"mcpServers": {"rebot": {"command": "/path/to/rebot-phone-teleop/.venv/bin/python", "args": ["-m", "rebot_teleop.mcp_server"]}}}
+```
+
+Sandboxed installs, such as Codex or Antigravity from a snap, cannot start programs inside hidden folders like `.venv`. For those run the MCP server yourself over HTTP and give the agent its address instead (`url = "http://127.0.0.1:8765/mcp"` in Codex, `"url"` or `"serverUrl"` in the JSON clients, `claude mcp add --transport http rebot http://127.0.0.1:8765/mcp` in Claude Code):
+
+```bash
+python -m rebot_teleop.mcp_server --http 8765
+```
+
+To drive a simulator or robot on another computer, add `--url http://<that computer>:8080 --code <pairing code>`.
+
+You can also write policies yourself. `python -m rebot_teleop.agent` prints the API, and `python -m rebot_teleop.agent policy.py` runs a file with `robot`, `np`, `math` and `time` ready:
+
+```python
+robot.home()
+robot.move(left={"tip_xyz": [0.30, 0.06, 0.80], "gripper_m": 0.05},
+           right={"tip_xyz": [0.30, -0.06, 0.80], "gripper_m": 0.05})
+robot.move_tip_by("left", [0, 0, 0.05])
+robot.say("wave left arm then go home")
+```
+
+World frame: x forward toward the eyes, y to the robot's left, z up, metres, origin at the foot of the post.
+
 ### Temperature
 
 The dashboard shows every motor temperature. At 75 C it warns, at 100 C it stops motion and holds, and Reset works again once the motor is below 90 C.

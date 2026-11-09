@@ -290,3 +290,56 @@ def plan(text, arms):
     if not steps:
         raise CommandError(HELP)
     return steps
+
+
+def finite(values, count, what):
+    array = np.asarray(values, dtype=float)
+    if array.shape != (count,) or not np.isfinite(array).all():
+        raise CommandError(f"{what} needs {count} finite numbers")
+    return array
+
+
+def target(view, spec):
+    if not isinstance(spec, dict):
+        raise CommandError(f"Describe the {view.name} move as an object")
+    q = np.asarray(view.q, dtype=float).copy()
+    notes = []
+    if spec.get("joints_deg") is not None:
+        q = np.radians(finite(spec["joints_deg"], 6, "joints_deg"))
+        notes.append("joints " + " ".join(f"{v:.0f}" for v in np.degrees(q)))
+    if spec.get("tip_xyz") is not None or spec.get("tip_delta") is not None:
+        position, rotation = view.kin.pose(q)
+        if spec.get("tip_rotation") is not None:
+            rotation = np.asarray(spec["tip_rotation"], dtype=float)
+            if rotation.shape != (3, 3) or not np.isfinite(rotation).all() or abs(np.linalg.det(rotation) - 1.0) > 0.05:
+                raise CommandError("tip_rotation must be a 3 by 3 rotation matrix")
+            u, _, vt = np.linalg.svd(rotation)
+            rotation = u @ vt
+        goal = finite(spec["tip_xyz"], 3, "tip_xyz") if spec.get("tip_xyz") is not None else position + finite(spec["tip_delta"], 3, "tip_delta")
+        weight = float(spec.get("orientation_weight", 0.4))
+        solution, residual = view.kin.inverse_pose(goal, rotation, q, orientation_weight=weight, iterations=150)
+        tilt = ""
+        if residual > 0.005 and spec.get("tip_rotation") is None:
+            for looser in (0.05, 0.0):
+                solution, residual = view.kin.inverse_pose(goal, rotation, q, orientation_weight=looser, iterations=300)
+                if residual <= 0.005:
+                    turned = math.degrees(np.linalg.norm(pin.log3(view.kin.pose(solution)[1] @ rotation.T)))
+                    tilt = f", hand tilted {turned:.0f} deg to get there"
+                    break
+        if residual > 0.005:
+            raise CommandError(f"{view.name} hand cannot reach {np.round(goal, 3).tolist()} (misses by {residual * 100:.1f} cm)")
+        if np.max(np.abs(solution - q)) > math.radians(120.0):
+            raise CommandError(f"{view.name} hand would swing more than 120 degrees to reach that point; go there in smaller steps")
+        q = solution
+        notes.append("tip to " + " ".join(f"{v:.3f}" for v in goal) + tilt)
+    try:
+        view.kin.validate(q)
+    except ValueError as error:
+        raise CommandError(f"{view.name}: {error}") from None
+    width = None
+    if spec.get("gripper_m") is not None:
+        width = float(np.clip(float(spec["gripper_m"]), 0.0, WIDTH_OPEN))
+        notes.append(f"gripper {width * 100:.1f} cm")
+    if not notes:
+        raise CommandError("Give joints_deg, tip_xyz, tip_delta or gripper_m")
+    return Move(view.name, q, width, f"{view.name} " + ", ".join(notes))

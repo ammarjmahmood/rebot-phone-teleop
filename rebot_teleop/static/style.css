@@ -23,3 +23,5 @@ label{display:block;margin:8px 0}.check{display:flex;gap:8px;align-items:center}
 .cameras { display: flex; flex-wrap: wrap; gap: .75rem; }
 .cameras figure { margin: 0; flex: 1 1 280px; max-width: 480px; }
 .cameras img { width: 100%; border-radius: 6px; background: #111; display: block; }
+.sim-view { background: #111; border-radius: 6px; overflow: hidden; touch-action: none; cursor: grab; }
+.sim-view img { width: 100%; display: block; aspect-ratio: 4 / 3; user-select: none; -webkit-user-drag: none; }

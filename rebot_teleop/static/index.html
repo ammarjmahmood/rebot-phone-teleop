@@ -9,6 +9,12 @@
 <header><h1>reBot teleop</h1><span id="connection">Connecting</span><button class="stop" id="stop">STOP</button></header>
 <main>
 <div class="notice" id="fault" hidden></div>
+<section class="card" id="view-card" hidden>
+<h2>Simulation view</h2>
+<div class="sim-view"><img id="sim-view" alt="Simulated robot seen from outside" draggable="false"></div>
+<div class="row"><button data-view="front">Face</button><button data-view="left">Left side</button><button data-view="right">Right side</button><button data-view="back">Back</button><button data-view="top">Top</button><button data-zoom="0.8">Closer</button><button data-zoom="1.25">Farther</button><button id="view-toggle">Pause view</button></div>
+<p class="fine">Drag the picture to look around the robot.</p>
+</section>
 <div id="arms"></div>
 <section class="card">
 <h2>Commands</h2>

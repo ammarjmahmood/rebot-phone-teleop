@@ -20,7 +20,7 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 import numpy as np
 from rebot_teleop import policy
-from rebot_teleop.camera import SimCamera, UsbCamera
+from rebot_teleop.camera import SimCamera, SimView, UsbCamera
 from fastapi.staticfiles import StaticFiles
 from rebot_teleop.auth import Auth
 from rebot_teleop.controller import TeleopController
@@ -152,6 +152,7 @@ def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, heb
     if os.environ.get("REBOT_TELEOP_SIM"):
         from rebot_teleop.sim import SimWorld
         sim = SimWorld(gui=os.environ["REBOT_TELEOP_SIM"] == "gui")
+    sim_view = SimView(sim) if sim else None
     camera_devices = json.loads(os.environ.get("REBOT_TELEOP_CAMERAS", "{}") or "{}")
     cameras = {}
     gist_file = Path(data_dir) / "gist_id"
@@ -321,8 +322,12 @@ def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, heb
             for current in everything.values():
                 await current.stop("Stop command")
             return {"done": ["stopped"]}
-        views = {name: policy.ArmView(name, current.kin, current.arm.q, current.home_q) for name, current in everything.items()}
-        steps = policy.plan(text, views)
+        return await run_steps(principal, everything, policy.plan(text, views_of(everything)), policy_speed, "Command")
+
+    def views_of(everything):
+        return {name: policy.ArmView(name, current.kin, current.arm.q, current.home_q) for name, current in everything.items()}
+
+    async def run_steps(principal, everything, steps, speed, reason):
         used = {name for step in steps for name in step}
         for name in used:
             current = everything[name]
@@ -332,11 +337,60 @@ def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, heb
                 raise ValueError(f"Stop VR, phone or HEBI control on the {name} arm first")
         done = []
         for step in steps:
-            results = await asyncio.gather(*(everything[name].move_to(move.q, move.width, policy_speed, reason="Command") for name, move in step.items()))
+            results = await asyncio.gather(*(everything[name].move_to(move.q, move.width, speed, reason=reason) for name, move in step.items()))
             done.extend(move.note for move in step.values())
             if not all(results):
                 return {"done": done, "interrupted": True}
         return {"done": done}
+
+    @app.post("/api/move")
+    async def move(request: Request):
+        principal = actor(request, "operator")
+        body = await body_of(request)
+        everything = nodes(request)
+        wanted = body.get("arms")
+        if not isinstance(wanted, dict) or not wanted:
+            raise ValueError("Send arms: {name: {joints_deg | tip_xyz | tip_delta, gripper_m}}")
+        unknown = [name for name in wanted if name not in everything]
+        if unknown:
+            raise ValueError("Unknown arm " + ", ".join(map(str, unknown)) + "; arms are " + ", ".join(everything))
+        views = views_of(everything)
+        step = {name: policy.target(views[name], spec) for name, spec in wanted.items()}
+        speed = policy_speed
+        if body.get("speed_deg_s") is not None:
+            speed = float(np.radians(np.clip(float(body["speed_deg_s"]), 2.0, float(np.degrees(policy_speed)) * 2)))
+        if body.get("dry_run"):
+            return {"ok": True, "plan": {name: {"joints_deg": np.degrees(move.q).round(1).tolist(), "tip_xyz": views[name].kin.pose(move.q)[0].round(4).tolist(), "note": move.note} for name, move in step.items()}}
+        return await run_steps(principal, everything, [step], speed, "Agent move")
+
+    @app.get("/api/sim/view.jpg")
+    async def sim_view_still(request: Request, yaw: float = 120.0, pitch: float = -15.0, distance: float = 1.9, height: float = 0.95):
+        actor(request)
+        if not sim:
+            raise HTTPException(404, "Only the simulator has an overview camera")
+        for _ in range(40):
+            frame = await asyncio.to_thread(sim_view.frame, yaw, pitch, distance, height)
+            if frame:
+                return Response(frame, media_type="image/jpeg")
+            await asyncio.sleep(0.05)
+        raise HTTPException(503, "The simulator view is not ready")
+
+    @app.get("/api/sim/view.mjpg")
+    async def sim_view_stream(request: Request, yaw: float = 120.0, pitch: float = -15.0, distance: float = 1.9, height: float = 0.95):
+        actor(request)
+        if not sim:
+            raise HTTPException(404, "Only the simulator has an overview camera")
+
+        async def frames():
+            last = None
+            while not await request.is_disconnected():
+                frame = await asyncio.to_thread(sim_view.frame, yaw, pitch, distance, height)
+                if frame and frame is not last:
+                    last = frame
+                    yield b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(frame)).encode() + b"\r\n\r\n" + frame + b"\r\n"
+                await asyncio.sleep(0.05)
+
+        return StreamingResponse(frames(), media_type="multipart/x-mixed-replace; boundary=frame")
 
     @app.get("/api/camera/{name}.jpg")
     async def camera_still(name: str, request: Request):

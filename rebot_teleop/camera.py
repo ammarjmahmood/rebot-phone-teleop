@@ -112,3 +112,24 @@ class SimCamera:
 
     def status(self):
         return {"kind": "sim", "device": self.channel, "note": self.note}
+
+
+class SimView:
+    def __init__(self, world, quality=80):
+        self.world = world
+        self.quality = quality
+        self.encoded_at = None
+        self.jpeg = None
+
+    def frame(self, yaw, pitch, distance, height):
+        latest = self.world.overview_frame(yaw, pitch, distance, height)
+        if latest is None:
+            return None
+        at, pixels = latest
+        if at != self.encoded_at:
+            from PIL import Image
+            buffer = io.BytesIO()
+            Image.fromarray(pixels).save(buffer, format="JPEG", quality=self.quality)
+            self.jpeg = buffer.getvalue()
+            self.encoded_at = at
+        return self.jpeg
