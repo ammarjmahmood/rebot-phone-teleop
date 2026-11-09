@@ -769,4 +769,61 @@
       effort="500"
       velocity="10" />
   </joint>
+  <link
+    name="wrist_camera_mount">
+    <inertial>
+      <origin xyz="-0.07 0 0.03" rpy="0 0 0" />
+      <mass value="0.025" />
+      <inertia ixx="0.00001" ixy="0" ixz="0" iyy="0.00001" iyz="0" izz="0.00001" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="camera/UVC32_mount_seeed.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+      <material name="rs_pla_black" />
+    </visual>
+  </link>
+  <joint
+    name="j_wrist_camera_mount"
+    type="fixed">
+    <origin xyz="-0.20 0 0.04" rpy="0 0 -1.5708" />
+    <parent link="gripper_end" />
+    <child link="wrist_camera_mount" />
+  </joint>
+  <link
+    name="wrist_camera">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <mass value="0.03" />
+      <inertia ixx="0.000005" ixy="0" ixz="0" iyy="0.000005" iyz="0" izz="0.000005" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <box size="0.032 0.032 0.018" />
+      </geometry>
+      <material name="rs_motor_black" />
+    </visual>
+    <visual>
+      <origin xyz="0 0 0.014" rpy="0 0 0" />
+      <geometry>
+        <cylinder radius="0.008" length="0.012" />
+      </geometry>
+      <material name="rs_wordmark_black" />
+    </visual>
+    <collision>
+      <origin xyz="0 0 0.004" rpy="0 0 0" />
+      <geometry>
+        <box size="0.034 0.034 0.026" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="j_wrist_camera"
+    type="fixed">
+    <origin xyz="-0.118 0 0.072" rpy="0 2.0722 0" />
+    <parent link="gripper_end" />
+    <child link="wrist_camera" />
+  </joint>
 </robot>

@@ -42,6 +42,8 @@ def main():
     parser.add_argument("--can", default="auto", help="SocketCAN interface connected to the arm; auto picks the PEAK USB adapter")
     parser.add_argument("--arm", action="append", default=[], metavar="NAME=IFACE", help="Add an arm, for example --arm left=can1 --arm right=can2; names left and right map to the Quest hands")
     parser.add_argument("--list-can", action="store_true", help="List CAN interfaces with their driver and USB port, then exit")
+    parser.add_argument("--sim", nargs="?", const="gui", choices=["gui", "headless"], help="Drive simulated arms in PyBullet instead of the CAN bus; the same IK, gravity compensation, safety checks and Quest page run unchanged")
+    parser.add_argument("--mount", action="append", default=[], metavar="NAME=X,Y,Z,ROLL,PITCH,YAW", help="Where an arm's base sits on the robot in metres and degrees, overriding the saved mount; left and right default to the side mounted post assembly")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--https-port", type=int, default=9443, help="HTTPS port for the Quest page")
     parser.add_argument("--lan", action="store_true", help="Listen on the network so phones and headsets can connect")
@@ -58,8 +60,23 @@ def main():
         if not name or not iface:
             parser.error("--arm needs NAME=IFACE, for example left=can1")
         arms[name.strip()] = iface.strip()
+    mounts = {}
+    for item in args.mount:
+        name, _, values = item.partition("=")
+        numbers = [float(v) for v in values.split(",")] if values else []
+        if not name or len(numbers) != 6:
+            parser.error("--mount needs NAME=X,Y,Z,ROLL,PITCH,YAW")
+        mounts[name.strip()] = {"xyz": numbers[:3], "rpy_deg": numbers[3:]}
+    if mounts:
+        import json
+        os.environ["REBOT_TELEOP_MOUNTS"] = json.dumps(mounts)
+    if args.sim:
+        os.environ["REBOT_TELEOP_SIM"] = args.sim
+        if not arms:
+            arms = {"left": "sim-left", "right": "sim-right"}
+        print("Simulation:", args.sim, "(no CAN traffic, no motors move)")
     data = Path(args.data)
-    os.environ["REBOT_TELEOP_CAN"] = detect_can() if args.can == "auto" else args.can
+    os.environ["REBOT_TELEOP_CAN"] = "sim" if args.sim else detect_can() if args.can == "auto" else args.can
     print("Using CAN interface", os.environ["REBOT_TELEOP_CAN"])
     os.environ["REBOT_TELEOP_PORT"] = str(args.port)
     os.environ["REBOT_TELEOP_HTTPS_PORT"] = str(args.https_port)

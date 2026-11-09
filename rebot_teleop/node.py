@@ -1,9 +1,11 @@
 import asyncio
+import json
 import math
+import os
 import time
 from pathlib import Path
 import numpy as np
-from rebot_teleop.kinematics import Kinematics
+from rebot_teleop.kinematics import Kinematics, mount_placement
 from rebot_teleop.rs_arm import RSArm
 from rebot_teleop.settings import Settings
 
@@ -11,13 +13,37 @@ from rebot_teleop.settings import Settings
 ASSETS = Path(__file__).resolve().parents[1] / "assets"
 HOME_SPEED = math.radians(20.0)
 HOME_ACCELERATION = math.radians(60.0)
+LEG_TOP_M = 1.30
+LEG_W_M = 0.040
+LEG_D_M = 0.060
+SHOULDER_BELOW_TOP_M = 0.155
+MOUNTS = {
+    "left": {"xyz": [0.0, LEG_W_M / 2, LEG_TOP_M - SHOULDER_BELOW_TOP_M], "rpy_deg": [-90.0, 0.0, 0.0]},
+    "right": {"xyz": [0.0, -LEG_W_M / 2, LEG_TOP_M - SHOULDER_BELOW_TOP_M], "rpy_deg": [90.0, 0.0, 0.0]},
+}
+HOMES_DEG = {
+    "left": [-90.0, 170.0, 145.0, 30.0, 0.0, 0.0],
+    "right": [90.0, 170.0, 145.0, 30.0, 0.0, 0.0],
+}
+
+
+def mount_for(name, settings):
+    overrides = json.loads(os.environ.get("REBOT_TELEOP_MOUNTS", "{}") or "{}")
+    return overrides.get(name) or settings.get("mount") or MOUNTS.get(name)
+
+
+def home_for(name, settings):
+    return settings.get("home_deg") or HOMES_DEG.get(name) or [0.0] * 6
 
 
 class TeleopNode:
-    def __init__(self, data_dir: Path, channel="can0", arm=None):
+    def __init__(self, data_dir: Path, channel="can0", arm=None, name="arm", controller_factory=None):
         self.settings = Settings(Path(data_dir) / "settings.json")
-        self.kin = Kinematics(ASSETS / "rebot_rs.urdf")
-        self.arm = arm or RSArm(channel, gripper_open_deg=270.0, gravity=self.kin.gravity_function())
+        self.name = name
+        self.mount = mount_for(name, self.settings)
+        self.kin = Kinematics(ASSETS / "rebot_rs.urdf", mount_placement(**self.mount) if self.mount else None)
+        self.home_q = np.radians(home_for(name, self.settings))
+        self.arm = arm or RSArm(channel, controller_factory=controller_factory, gripper_open_deg=270.0, gravity=self.kin.gravity_function())
         self.kin.lower = self.arm.lower.copy()
         self.kin.upper = self.arm.upper.copy()
         saved = self.settings.get("gripper_range")
@@ -109,6 +135,9 @@ class TeleopNode:
     def reset(self):
         if self.arm.moving:
             raise ValueError("Wait until the arm has stopped")
+        check = getattr(self.arm, "check_cool", None)
+        if check:
+            check()
         self.estopped = False
         self.fault = None
         self.arm.fault = None
@@ -146,7 +175,7 @@ class TeleopNode:
         await self.stop("Homing")
         self.fault = None
         generation = self.generation
-        samples = self.kin.trajectory(self.planning_start(), np.zeros(6), HOME_SPEED, HOME_ACCELERATION)
+        samples = self.kin.trajectory(self.planning_start(), self.home_q, HOME_SPEED, HOME_ACCELERATION)
 
         async def run():
             self.arm.enabled = True
@@ -196,7 +225,7 @@ class TeleopNode:
     def status(self):
         arm = self.arm.status()
         return {
-            **arm, "owner": self.owner, "estopped": self.estopped, "fault": self.fault or arm["fault"], "homing": bool(self.motion and not self.motion.done()),
+            **arm, "owner": self.owner, "estopped": self.estopped, "fault": self.fault or arm["fault"], "arm_fault": arm["fault"], "homing": bool(self.motion and not self.motion.done()),
             "joints_deg": [round(math.degrees(v), 1) for v in self.arm.q], "remote_seconds": max(0, round(self.remote_until - time.monotonic())),
-            "controllers": {name: controller.status() for name, controller in self.controllers.items()},
+            "controllers": {name: controller.status() for name, controller in self.controllers.items()}, "mount": self.mount, "home_deg": [round(math.degrees(v), 1) for v in self.home_q],
         }

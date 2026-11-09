@@ -4,9 +4,21 @@ import numpy as np
 import pinocchio as pin
 
 
+def mount_placement(xyz=(0.0, 0.0, 0.0), rpy_deg=(0.0, 0.0, 0.0)):
+    return pin.SE3(pin.rpy.rpyToMatrix(*np.radians(np.asarray(rpy_deg, dtype=float))), np.asarray(xyz, dtype=float))
+
+
 class Kinematics:
-    def __init__(self, urdf: Path):
+    def __init__(self, urdf: Path, mount=None):
         self.model = pin.buildModelFromUrdf(str(urdf))
+        self.mount = mount if mount is not None else pin.SE3.Identity()
+        root = self.model.getJointId("joint1")
+        self.model.jointPlacements[root] = self.mount * self.model.jointPlacements[root]
+        for index in range(len(self.model.frames)):
+            frame = self.model.frames[index]
+            if frame.parentJoint == 0 and frame.name != "universe":
+                frame.placement = self.mount * frame.placement
+                self.model.frames[index] = frame
         self.data = self.model.createData()
         self.indices = [self.model.joints[self.model.getJointId(f"joint{i}")].idx_q for i in range(1, 7)]
         self.lower = self.model.lowerPositionLimit[self.indices].copy()
@@ -31,7 +43,7 @@ class Kinematics:
     def points(self, q):
         data = self.model.createData()
         pin.framesForwardKinematics(self.model, data, self.configuration(q))
-        points = [np.zeros(3)]
+        points = [self.mount.translation.copy()]
         for i in range(1, 7):
             points.append(data.oMi[self.model.getJointId(f"joint{i}")].translation.copy())
         points.append(data.oMf[self.tip].translation.copy())
@@ -46,7 +58,10 @@ class Kinematics:
             joint = int(outside[0])
             raise ValueError(f"Joint {joint + 1} limit reached at {math.degrees(q[joint]):.1f} degrees")
         points = self.points(q)
-        if np.any(points[:, 2] < min_z) or np.any(np.linalg.norm(points[:, :2], axis=1) > max_radius):
+        local = (points - self.mount.translation) @ self.mount.rotation
+        if np.any(points[:, 2] < min_z) or np.any(local[:, 2] < min_z):
+            raise ValueError("Workspace boundary reached")
+        if np.any(np.linalg.norm(local[:, :2], axis=1) > max_radius):
             raise ValueError("Workspace boundary reached")
 
     def inverse_pose(self, position, rotation, seed, orientation_weight=0.4, iterations=60):

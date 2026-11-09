@@ -177,3 +177,32 @@ Related earlier work on phone teleoperation: Mandlekar et al., *RoboTurk: A Crow
 5. HEBI Robotics [Mobile I/O](https://docs.hebi.us/tools.html#mobile-io), also used by LeRobot's phone teleoperator.
 
 The code in this repository is released under the MIT licence (`LICENSE`).
+
+## Simulation before hardware
+
+`--sim` runs the same server, IK, gravity compensation, safety checks, dashboard and Quest page against two PyBullet arms on the post assembly. Nothing is sent on CAN.
+
+```bash
+python -m rebot_teleop --sim --data ~/.rebot-teleop-sim
+python -m rebot_teleop --sim --cloudflare --data ~/.rebot-teleop-sim
+```
+
+The first opens a 3D window and the dashboard at http://127.0.0.1:8080. The second also prints a public https link, so a Quest anywhere can drive the simulated arms after pairing with a code from the dashboard. Arms are named `left` and `right` and follow the matching Quest controllers.
+
+Check the whole chain automatically while the server runs:
+
+```bash
+python scripts/validate_sim.py --url http://127.0.0.1:8080
+```
+
+It powers both arms on, moves virtual Quest hands forward, back, left, right, up and down, rolls and pitches them, squeezes the triggers, then checks that each gripper moved the same way in the world, that nothing hit the post, and that the temperature warning, stop and Reset behave.
+
+### Mounting
+
+`left` and `right` default to the Purpose Robotics post from the CAD in `~/rebot_isaac_sim/robot_head`: eyes face the front, each base plate bolts flat to a side of the 40 x 60 mm leg 155 mm below its top, J1 points out sideways and J1 zero faces the front. Home (also the sim start pose and the Quest B button) is the arms hanging beside the post: left `[-90, 170, 145, 30, 0, 0]`, right `[90, 170, 145, 30, 0, 0]` degrees. Override with `"home_deg"` in that arm's `settings.json`. The same mount is used on hardware, so IK and gravity compensation match the real orientation. Override it per arm with `--mount left=X,Y,Z,ROLL,PITCH,YAW` (metres, degrees), or save `"mount": {"xyz": [...], "rpy_deg": [...]}` in that arm's `settings.json`.
+
+### Temperature
+
+The dashboard shows every motor temperature. At 75 C it warns, at 100 C it stops motion and holds, and Reset works again once the motor is below 90 C.
+
+Meshes come from Seeed's reBot description; set `REBOT_SIM_MESHES` to its `RS/meshes` folder if it is not found automatically. The wrist camera mount is Seeed's UVC32 mount.

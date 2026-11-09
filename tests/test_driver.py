@@ -190,9 +190,17 @@ def test_hot_motor_faults():
     arm.confirm_zero()
     arm.enable()
     try:
-        buses[0].motors[5].temperature = 95.0
+        buses[0].motors[5].temperature = 80.0
+        assert wait_for(lambda: arm.status()["temperature_warning"] is not None, 3)
+        assert arm.fault is None
+        buses[0].motors[5].temperature = 105.0
         assert wait_for(lambda: arm.fault is not None, 3)
-        assert "temperature" in arm.fault
+        assert "Joint 5" in arm.fault and "100 C" in arm.fault
+        with pytest.raises(ValueError, match="still"):
+            arm.check_cool()
+        buses[0].motors[5].temperature = 60.0
+        assert wait_for(lambda: arm.temperatures[4] == 60.0, 3)
+        arm.check_cool()
     finally:
         arm.close()
 

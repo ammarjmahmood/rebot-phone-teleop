@@ -144,6 +144,10 @@ def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, heb
     if tunnel:
         patterns.append("*.trycloudflare.com")
     arms = arms or {"arm": os.environ.get("REBOT_TELEOP_CAN", "can0")}
+    sim = None
+    if os.environ.get("REBOT_TELEOP_SIM"):
+        from rebot_teleop.sim import SimWorld
+        sim = SimWorld(gui=os.environ["REBOT_TELEOP_SIM"] == "gui")
     gist_file = Path(data_dir) / "gist_id"
     token = auth.values.get("REBOT_TELEOP_GIST_TOKEN", "")
     gist = GistBookmark(token, gist_file.read_text().strip() if gist_file.exists() else auth.values.get("REBOT_TELEOP_GIST_ID", ""), gist_file) if tunnel and token else None
@@ -153,7 +157,12 @@ def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, heb
 
     def build(name, channel):
         folder = Path(data_dir) if len(arms) == 1 else Path(data_dir) / "arms" / name
-        current = node_factory(name, channel) if node_factory else TeleopNode(folder, channel)
+        if node_factory:
+            current = node_factory(name, channel)
+        else:
+            current = TeleopNode(folder, channel, name=name, controller_factory=sim.controller if sim else None)
+            if sim:
+                sim.add_arm(channel, current.kin.mount, current.home_q)
         current.name = name
         current.hand = name if name in {"left", "right"} else "right"
         current.controllers = {
@@ -184,6 +193,8 @@ def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, heb
             tunnel.stop()
         for current in app.state.nodes.values():
             await current.close()
+        if sim:
+            sim.close()
 
     app = FastAPI(title="reBot teleop", lifespan=lifespan)
 
@@ -266,7 +277,17 @@ def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, heb
         principal = actor(request)
         everything = nodes(request)
         first = next(iter(everything.values()))
-        return {**first.status(), "arm": first.name, "arms": {name: current.status() for name, current in everything.items()}, "principal": principal.model_dump(), "gist": gist.status if gist else None}
+        return {**first.status(), "arm": first.name, "arms": {name: current.status() for name, current in everything.items()}, "principal": principal.model_dump(), "gist": gist.status if gist else None, "sim": sim.snapshot() if sim else None}
+
+    @app.post("/api/sim/temperature")
+    async def sim_temperature(request: Request):
+        device(request)
+        if not sim:
+            raise HTTPException(404)
+        body = await body_of(request)
+        current = pick(request, body.get("arm"))
+        sim.set_temperature(current.arm.channel, int(body["joint"]) - 1, float(body["celsius"]))
+        return sim.snapshot()
 
     async def body_of(request):
         try:
