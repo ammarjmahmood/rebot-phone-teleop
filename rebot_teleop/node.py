@@ -13,6 +13,8 @@ from rebot_teleop.settings import Settings
 ASSETS = Path(__file__).resolve().parents[1] / "assets"
 HOME_SPEED = math.radians(20.0)
 HOME_ACCELERATION = math.radians(60.0)
+COMMAND_SPEED = math.radians(30.0)
+HAND_GUIDE_HZ = 25.0
 LEG_TOP_M = 1.30
 LEG_W_M = 0.040
 LEG_D_M = 0.060
@@ -21,6 +23,10 @@ MOUNTS = {
     "left": {"xyz": [0.0, LEG_W_M / 2, LEG_TOP_M - SHOULDER_BELOW_TOP_M], "rpy_deg": [-90.0, 0.0, 0.0]},
     "right": {"xyz": [0.0, -LEG_W_M / 2, LEG_TOP_M - SHOULDER_BELOW_TOP_M], "rpy_deg": [90.0, 0.0, 0.0]},
 }
+KEEP_OUT = [
+    ("post", np.array([0.0, 0.0, LEG_TOP_M / 2]), np.array([LEG_D_M / 2, LEG_W_M / 2, LEG_TOP_M / 2])),
+    ("head", np.array([0.0, 0.0, LEG_TOP_M + 0.0684]), np.array([0.035, 0.0924, 0.053])),
+]
 HOMES_DEG = {
     "left": [-90.0, 170.0, 145.0, 30.0, 0.0, 0.0],
     "right": [90.0, 170.0, 145.0, 30.0, 0.0, 0.0],
@@ -43,6 +49,8 @@ class TeleopNode:
         self.mount = mount_for(name, self.settings)
         self.kin = Kinematics(ASSETS / "rebot_rs.urdf", mount_placement(**self.mount) if self.mount else None)
         self.home_q = np.radians(home_for(name, self.settings))
+        if self.mount and self.mount == MOUNTS.get(name):
+            self.kin.keep_out = KEEP_OUT
         self.arm = arm or RSArm(channel, controller_factory=controller_factory, gripper_open_deg=270.0, gravity=self.kin.gravity_function())
         self.kin.lower = self.arm.lower.copy()
         self.kin.upper = self.arm.upper.copy()
@@ -59,12 +67,15 @@ class TeleopNode:
         self.remote_until = 0.0
         self.motion = None
         self.monitor_task = None
+        self.hand_guide = False
+        self.hand_task = None
 
     async def start(self):
         self.monitor_task = asyncio.create_task(self.monitor())
         await self.connect()
 
     async def close(self):
+        await self.set_hand_guide(False)
         for controller in self.controllers.values():
             await controller.stop("Service stopped")
         await self.stop("Service stopped")
@@ -148,6 +159,7 @@ class TeleopNode:
             raise ValueError(self.fault or "The arm is not connected")
         if self.estopped:
             raise ValueError("Reset the stop first")
+        await self.set_hand_guide(False)
         if not self.arm.zeroed:
             await asyncio.to_thread(self.arm.confirm_zero, True)
         if not self.arm.torque:
@@ -171,34 +183,74 @@ class TeleopNode:
         return np.clip(start, self.kin.lower, self.kin.upper)
 
     async def home(self):
+        return await self.move_to(self.home_q, reason="Homing")
+
+    async def move_to(self, goal, width=None, speed=HOME_SPEED, reason="Moving"):
         self.require_ready()
-        await self.stop("Homing")
+        await self.stop(reason)
         self.fault = None
         generation = self.generation
-        samples = self.kin.trajectory(self.planning_start(), self.home_q, HOME_SPEED, HOME_ACCELERATION)
+        samples = self.kin.trajectory(self.planning_start(), np.asarray(goal, dtype=float), speed, HOME_ACCELERATION)
 
         async def run():
             self.arm.enabled = True
+            if width is not None:
+                self.arm.grip(float(width))
             previous = 0.0
             for at, q in samples[1:]:
                 await asyncio.sleep(at - previous)
                 previous = at
                 if generation != self.generation:
-                    return
+                    return False
                 self.require_ready()
                 self.arm.write(q, 0.02)
-            deadline = time.monotonic() + 10
+            deadline = time.monotonic() + (10 if width is None else 3)
             while self.arm.moving and time.monotonic() < deadline and generation == self.generation:
                 await asyncio.sleep(0.02)
             self.arm.stop()
+            return generation == self.generation
 
         self.motion = asyncio.create_task(run())
         try:
-            await self.motion
+            return await self.motion
         except ValueError as error:
             self.arm.stop()
             self.fault = str(error)
             raise
+
+    async def set_hand_guide(self, on):
+        if not on:
+            self.hand_guide = False
+            task, self.hand_task = self.hand_task, None
+            if task and task is not asyncio.current_task() and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+            return
+        await self.connect()
+        if not self.arm.connected:
+            raise ValueError(self.fault or "The arm is not connected")
+        if self.arm.torque:
+            raise ValueError("Release torque first; hand guiding only reads the joints with the motors off")
+        self.hand_guide = True
+        if not self.hand_task or self.hand_task.done():
+            self.hand_task = asyncio.create_task(self.follow_hand())
+
+    async def follow_hand(self):
+        failures = 0
+        while self.hand_guide and not self.arm.torque:
+            try:
+                await asyncio.to_thread(self.arm.read_positions)
+                failures = 0
+            except Exception as error:
+                failures += 1
+                if failures >= 5:
+                    self.fault = f"Hand guiding stopped: {error}"
+                    break
+            await asyncio.sleep(1.0 / HAND_GUIDE_HZ)
+        self.hand_guide = False
 
     async def home_with(self, controller, principal):
         resume = controller.active
@@ -228,4 +280,5 @@ class TeleopNode:
             **arm, "owner": self.owner, "estopped": self.estopped, "fault": self.fault or arm["fault"], "arm_fault": arm["fault"], "homing": bool(self.motion and not self.motion.done()),
             "joints_deg": [round(math.degrees(v), 1) for v in self.arm.q], "remote_seconds": max(0, round(self.remote_until - time.monotonic())),
             "controllers": {name: controller.status() for name, controller in self.controllers.items()}, "mount": self.mount, "home_deg": [round(math.degrees(v), 1) for v in self.home_q],
+            "hand_guide": self.hand_guide, "tip_xyz": [round(float(v), 4) for v in self.kin.pose(self.arm.q)[0]],
         }

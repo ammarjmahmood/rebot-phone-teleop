@@ -13,10 +13,12 @@ const act = fn => async () => { try { await fn(); await poll(); } catch (error) 
 const releaseArmed = {};
 const armedRecently = name => releaseArmed[name] && Date.now() - releaseArmed[name] < 4000;
 function armCard(name, a, local) {
-  const status = !a.connected ? 'Arm not answering. Check its 48 V supply and CAN adapter, then press Power on.' : a.estopped ? 'Stop is latched. Check the arm, then Reset stop.' : a.arm_fault ? 'Stopped by a fault. Fix the cause, press Reset stop, then Power on and hold here.' : !a.torque ? 'Motors off.' : a.homing ? 'Moving to zero.' : a.owner ? 'Under teleop control.' : 'Motors on and holding.';
+  const status = !a.connected ? 'Arm not answering. Check its 48 V supply and CAN adapter, then press Power on.' : a.hand_guide ? 'Hand guiding: motors off, move the joints by hand and watch the numbers and the twin.' : a.estopped ? 'Stop is latched. Check the arm, then Reset stop.' : a.arm_fault ? 'Stopped by a fault. Fix the cause, press Reset stop, then Power on and hold here.' : !a.torque ? 'Motors off.' : a.homing ? 'Moving to zero.' : a.owner ? 'Under teleop control.' : 'Motors on and holding.';
   const joints = a.joints_deg.map((v, i) => `<div>J${i + 1} ${v.toFixed(1)}°</div>`).join('') + `<div>Grip ${a.gripper_deg}°</div>`;
   const temps = (a.temperatures || []).map((t, i) => `<div class="${t !== null && t >= a.temperature_limits_c[0] ? 'warm' : ''}">${i < 6 ? 'J' + (i + 1) : 'Grip'} ${t === null ? '?' : t.toFixed(0) + ' °C'}</div>`).join('');
-  const buttons = local ? `<div class="row">${a.torque ? '' : `<button class="primary" data-act="power-home" data-arm="${esc(name)}">Power on and go to zero</button><button data-act="power-hold" data-arm="${esc(name)}">Power on and hold here</button>`}${a.torque ? `<button data-act="home" data-arm="${esc(name)}">Home</button>` : ''}${a.estopped || a.arm_fault ? `<button data-act="reset" data-arm="${esc(name)}">Reset stop</button>` : ''}${a.torque ? `<button class="danger" data-act="release" data-arm="${esc(name)}">${armedRecently(name) ? 'Click again: arm may drop' : 'Release torque'}</button>` : ''}</div><div class="row"><button data-act="save-closed" data-arm="${esc(name)}">Save gripper as fully closed</button><button data-act="save-open" data-arm="${esc(name)}">Save gripper as fully open</button></div><p class="fine">Gripper range ${a.gripper_range_deg[0]}° to ${a.gripper_range_deg[1]}°. Release torque turns the motors off and the arm can drop, so support it first.</p>` : '';
+  const guide = a.connected && !a.torque ? `<div class="row"><button data-act="${a.hand_guide ? 'guide-off' : 'guide-on'}" data-arm="${esc(name)}">${a.hand_guide ? 'Stop hand guiding' : 'Hand guide (motors stay off)'}</button></div>` : '';
+  const model = a.hand_guide ? `<p class="fine">Model tip x ${a.tip_xyz[0].toFixed(3)} y ${a.tip_xyz[1].toFixed(3)} z ${a.tip_xyz[2].toFixed(3)} m. Difference from home: ${a.joints_deg.map((v, i) => 'J' + (i + 1) + ' ' + (v - a.home_deg[i]).toFixed(0) + '°').join(', ')}</p>` : '';
+  const buttons = guide + model + (local ? `<div class="row">${a.torque ? '' : `<button class="primary" data-act="power-home" data-arm="${esc(name)}">Power on and go to zero</button><button data-act="power-hold" data-arm="${esc(name)}">Power on and hold here</button>`}${a.torque ? `<button data-act="home" data-arm="${esc(name)}">Home</button>` : ''}${a.estopped || a.arm_fault ? `<button data-act="reset" data-arm="${esc(name)}">Reset stop</button>` : ''}${a.torque ? `<button class="danger" data-act="release" data-arm="${esc(name)}">${armedRecently(name) ? 'Click again: arm may drop' : 'Release torque'}</button>` : ''}</div><div class="row"><button data-act="save-closed" data-arm="${esc(name)}">Save gripper as fully closed</button><button data-act="save-open" data-arm="${esc(name)}">Save gripper as fully open</button></div><p class="fine">Gripper range ${a.gripper_range_deg[0]}° to ${a.gripper_range_deg[1]}°. Release torque turns the motors off and the arm can drop, so support it first.</p>` : '');
   return `<section class="card"><h2>${esc(name === 'arm' ? 'Arm' : name.charAt(0).toUpperCase() + name.slice(1) + ' arm')} <span class="fine">${esc(a.channel)}</span></h2><p>${esc(status)}</p>${a.fault ? `<div class="notice">${esc(a.fault)}</div>` : ''}${a.temperature_warning ? `<div class="notice">${esc(a.temperature_warning)}</div>` : ''}<div class="joints">${joints}</div><div class="joints">${temps}</div>${buttons}</section>`;
 }
 function render() {
@@ -32,6 +34,7 @@ function render() {
   const h = s.arms[select.value || names[0]].controllers.hebi;
   $('hebi-status').textContent = !h.active ? 'Off' : h.calibrating ? 'Calibrating ' + h.calibrating + ': hold Move and move the phone' : h.source !== 'streaming' ? 'Looking for the HEBI app' : !h.ready ? 'Calibrate up, forward and left' : (h.note || (h.mode ? 'Moving' : 'Ready, hold Move'));
   $('gist').textContent = s.gist ? 'Quest bookmark: ' + s.gist : '';
+  renderCameras(s);
 }
 async function poll() { try { state = await api('state'); $('connection').textContent = 'Connected'; render(); } catch (error) { $('connection').textContent = 'Connection lost'; } }
 $('stop').onclick = act(() => api('stop', {}));
@@ -42,10 +45,43 @@ const armActions = {
   'reset': arm => api('reset', {arm}),
   'save-closed': arm => api('gripper-range', {arm, which: 'closed'}),
   'save-open': arm => api('gripper-range', {arm, which: 'open'}),
+  'guide-on': arm => api('handguide', {arm, on: true}),
+  'guide-off': arm => api('handguide', {arm, on: false}),
 };
+const watching = new Set();
+let cameraKey = '';
+function renderCameras(s) {
+  const names = Object.keys(s.cameras || {});
+  $('camera-card').hidden = !names.length;
+  const key = names.join(',') + '|' + [...watching].join(',');
+  if (key === cameraKey) return;
+  cameraKey = key;
+  $('camera-buttons').innerHTML = names.map(name => `<button data-camera="${esc(name)}">${watching.has(name) ? 'Hide' : 'Show'} ${esc(name)} camera</button>`).join('');
+  $('cameras').innerHTML = [...watching].filter(name => names.includes(name)).map(name => `<figure><img src="/api/camera/${encodeURIComponent(name)}.mjpg" alt="${esc(name)} wrist camera"><figcaption>${esc(name)} wrist</figcaption></figure>`).join('');
+}
+document.addEventListener('click', event => {
+  const button = event.target.closest('[data-camera]');
+  if (!button) return;
+  const name = button.dataset.camera;
+  watching.has(name) ? watching.delete(name) : watching.add(name);
+  renderCameras(state);
+});
+async function runCommand() {
+  const text = $('command').value.trim();
+  if (!text) return;
+  $('command-result').textContent = 'Running: ' + text;
+  try {
+    const r = await api('command', {text});
+    $('command-result').textContent = (r.interrupted ? 'Interrupted after: ' : 'Done: ') + r.done.join('; ');
+  } catch (error) { $('command-result').textContent = error.message; toast(error.message, true); }
+  await poll();
+}
+$('command-run').onclick = runCommand;
+$('command').addEventListener('keydown', event => { if (event.key === 'Enter') runCommand(); });
 document.addEventListener('click', event => {
   const button = event.target.closest('[data-act]');
   if (!button) return;
+  if (!armActions[button.dataset.act] && button.dataset.act !== 'release') return;
   const arm = button.dataset.arm, kind = button.dataset.act;
   if (kind === 'release') {
     if (!armedRecently(arm)) { releaseArmed[arm] = Date.now(); render(); return; }

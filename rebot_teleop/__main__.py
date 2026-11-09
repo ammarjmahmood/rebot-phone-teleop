@@ -44,6 +44,7 @@ def main():
     parser.add_argument("--list-can", action="store_true", help="List CAN interfaces with their driver and USB port, then exit")
     parser.add_argument("--sim", nargs="?", const="gui", choices=["gui", "headless"], help="Drive simulated arms in PyBullet instead of the CAN bus; the same IK, gravity compensation, safety checks and Quest page run unchanged")
     parser.add_argument("--mount", action="append", default=[], metavar="NAME=X,Y,Z,ROLL,PITCH,YAW", help="Where an arm's base sits on the robot in metres and degrees, overriding the saved mount; left and right default to the side mounted post assembly")
+    parser.add_argument("--camera", action="append", default=[], metavar="NAME=DEVICE", help="USB wrist camera for an arm, for example --camera left=/dev/video0; in --sim each arm gets a rendered wrist camera")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--https-port", type=int, default=9443, help="HTTPS port for the Quest page")
     parser.add_argument("--lan", action="store_true", help="Listen on the network so phones and headsets can connect")
@@ -67,6 +68,15 @@ def main():
         if not name or len(numbers) != 6:
             parser.error("--mount needs NAME=X,Y,Z,ROLL,PITCH,YAW")
         mounts[name.strip()] = {"xyz": numbers[:3], "rpy_deg": numbers[3:]}
+    cameras = {}
+    for item in args.camera:
+        name, _, device = item.partition("=")
+        if not name or not device:
+            parser.error("--camera needs NAME=DEVICE, for example left=/dev/video0")
+        cameras[name.strip()] = device.strip()
+    if cameras:
+        import json
+        os.environ["REBOT_TELEOP_CAMERAS"] = json.dumps(cameras)
     if mounts:
         import json
         os.environ["REBOT_TELEOP_MOUNTS"] = json.dumps(mounts)

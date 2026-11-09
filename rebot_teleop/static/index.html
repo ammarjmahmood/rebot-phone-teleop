@@ -10,6 +10,17 @@
 <main>
 <div class="notice" id="fault" hidden></div>
 <div id="arms"></div>
+<section class="card">
+<h2>Commands</h2>
+<p class="fine">Type what the arms should do, for example raise left hand, bend elbows, move hands forward 5 cm, twist right wrist clockwise, open grippers, wave, go home. Join steps with then. The arms move at 30 degrees per second; STOP works as usual.</p>
+<div class="row"><input id="command" placeholder="raise hands then bend elbows" autocomplete="off"><button class="primary" id="command-run">Run</button></div>
+<div id="command-result" class="fine"></div>
+</section>
+<section class="card" id="camera-card" hidden>
+<h2>Wrist cameras</h2>
+<div class="row" id="camera-buttons"></div>
+<div class="cameras" id="cameras"></div>
+</section>
 <section class="card local">
 <h2>Phone and headset access</h2>
 <label class="check"><input type="checkbox" id="remote"> Allow phone and headset motion for 15 minutes</label>

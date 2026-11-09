@@ -28,6 +28,22 @@ class Kinematics:
         if tip is None:
             raise ValueError("Missing end effector frame")
         self.tip = self.model.getFrameId(tip)
+        self.keep_out = []
+        self.clearance = 0.035
+
+    def clear_of(self, points):
+        if not self.keep_out:
+            return None
+        chain = points[3:]
+        samples = [chain[0]]
+        for a, b in zip(chain[:-1], chain[1:]):
+            for u in (0.25, 0.5, 0.75, 1.0):
+                samples.append(a + (b - a) * u)
+        for name, center, half in self.keep_out:
+            gap = np.maximum(np.abs(np.asarray(samples) - center) - half, 0.0)
+            if np.min(np.linalg.norm(gap, axis=1)) < self.clearance:
+                return name
+        return None
 
     def configuration(self, q):
         full = pin.neutral(self.model)
@@ -63,6 +79,9 @@ class Kinematics:
             raise ValueError("Workspace boundary reached")
         if np.any(np.linalg.norm(local[:, :2], axis=1) > max_radius):
             raise ValueError("Workspace boundary reached")
+        hit = self.clear_of(points)
+        if hit:
+            raise ValueError(f"The arm would hit the {hit}")
 
     def inverse_pose(self, position, rotation, seed, orientation_weight=0.4, iterations=60):
         data = self.model.createData()

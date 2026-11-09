@@ -201,6 +201,32 @@ It powers both arms on, moves virtual Quest hands forward, back, left, right, up
 
 `left` and `right` default to the Purpose Robotics post from the CAD in `~/rebot_isaac_sim/robot_head`: eyes face the front, each base plate bolts flat to a side of the 40 x 60 mm leg 155 mm below its top, J1 points out sideways and J1 zero faces the front. Home (also the sim start pose and the Quest B button) is the arms hanging beside the post: left `[-90, 170, 145, 30, 0, 0]`, right `[90, 170, 145, 30, 0, 0]` degrees. Override with `"home_deg"` in that arm's `settings.json`. The same mount is used on hardware, so IK and gravity compensation match the real orientation. Override it per arm with `--mount left=X,Y,Z,ROLL,PITCH,YAW` (metres, degrees), or save `"mount": {"xyz": [...], "rpy_deg": [...]}` in that arm's `settings.json`.
 
+### Hand guiding and the joint check
+
+Hand guiding reads the joints with the motors off, so you can move the real arm by hand and watch the numbers, the model tip position and the twin follow. Press Hand guide on an arm card (it is offered only while torque is off). Power on ends it.
+
+Mirror a running server, real or simulated, in a PyBullet window on any computer:
+
+```bash
+python -m rebot_teleop.twin --url http://JETSON_ADDRESS:8080 --code PAIRING_CODE
+```
+
+Check that every real joint matches the URDF before the first powered move:
+
+```bash
+python scripts/joint_check.py --url http://JETSON_ADDRESS:8080 --code PAIRING_CODE
+```
+
+With the arm resting in its start pose and torque off, it compares the readings with the home angles in the code, then asks you to turn one joint at a time in a described direction (for example "so the gripper tip goes forward, toward the eyes"). It fails if a different joint reads the change (motor IDs or order wrong) or if the joint reads backwards (axis sign wrong, which would make IK and gravity compensation push the wrong way). Against a `--sim` server, `--simulate` moves the joints itself, and `--fault flip` or `--fault swap` plant a reversed J2 or swapped J4 and J5 to show the check catching them.
+
+### Commands
+
+The Commands box on the dashboard and `POST /api/command {"text": ...}` turn short phrases into joint moves: raise or lower hands (J1), raise elbows (J2), bend or straighten elbows (J3), raise wrists or turn wrists in or out (J4 or J5, whichever moves the tip that way from the current pose), twist wrists clockwise (J6), move hands forward 5 cm (IK, orientation held), open or close grippers, joint 3 by 10 or joint 3 to 90, wave, go home. Say left, right or both; no side means both. Join steps with then. Directions are worked out from the model at the current pose, so the mirrored arms both go the way the words say. Every step is planned and checked before anything moves, including keep out boxes around the post and head, and the arms move at 30 degrees per second (`REBOT_TELEOP_COMMAND_DEG_S`). The same keep out boxes now also stop Quest and phone teleop short of the post.
+
+### Wrist cameras
+
+Each arm card area gets a Wrist cameras panel. In `--sim` the picture is rendered from the camera on the UVC32 mount. On hardware pass the USB devices, for example `--camera left=/dev/video0 --camera right=/dev/video2`, and install OpenCV with `pip install .[camera]`. The stream is MJPEG at `/api/camera/left.mjpg`, with a single frame at `/api/camera/left.jpg`, and needs the same pairing as the dashboard. A camera is opened only while someone is watching.
+
 ### Temperature
 
 The dashboard shows every motor temperature. At 75 C it warns, at 100 C it stops motion and holds, and Reset works again once the motor is below 90 C.

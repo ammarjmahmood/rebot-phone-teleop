@@ -17,7 +17,10 @@ from urllib.parse import urlencode, urlparse
 import psutil
 import segno
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+import numpy as np
+from rebot_teleop import policy
+from rebot_teleop.camera import SimCamera, UsbCamera
 from fastapi.staticfiles import StaticFiles
 from rebot_teleop.auth import Auth
 from rebot_teleop.controller import TeleopController
@@ -140,6 +143,7 @@ def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, heb
         name = tailscale_name()
         if name:
             allowed.add(name)
+    policy_speed = float(np.radians(float(os.environ.get("REBOT_TELEOP_COMMAND_DEG_S", "30"))))
     tunnel = CloudflareTunnel(port) if os.environ.get("REBOT_TELEOP_CLOUDFLARE") == "1" else None
     if tunnel:
         patterns.append("*.trycloudflare.com")
@@ -148,6 +152,8 @@ def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, heb
     if os.environ.get("REBOT_TELEOP_SIM"):
         from rebot_teleop.sim import SimWorld
         sim = SimWorld(gui=os.environ["REBOT_TELEOP_SIM"] == "gui")
+    camera_devices = json.loads(os.environ.get("REBOT_TELEOP_CAMERAS", "{}") or "{}")
+    cameras = {}
     gist_file = Path(data_dir) / "gist_id"
     token = auth.values.get("REBOT_TELEOP_GIST_TOKEN", "")
     gist = GistBookmark(token, gist_file.read_text().strip() if gist_file.exists() else auth.values.get("REBOT_TELEOP_GIST_ID", ""), gist_file) if tunnel and token else None
@@ -163,6 +169,10 @@ def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, heb
             current = TeleopNode(folder, channel, name=name, controller_factory=sim.controller if sim else None)
             if sim:
                 sim.add_arm(channel, current.kin.mount, current.home_q)
+        if name in camera_devices:
+            cameras[name] = UsbCamera(camera_devices[name])
+        elif sim and not node_factory:
+            cameras[name] = SimCamera(sim, channel)
         current.name = name
         current.hand = name if name in {"left", "right"} else "right"
         current.controllers = {
@@ -193,6 +203,8 @@ def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, heb
             tunnel.stop()
         for current in app.state.nodes.values():
             await current.close()
+        for camera in cameras.values():
+            camera.close()
         if sim:
             sim.close()
 
@@ -277,7 +289,85 @@ def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, heb
         principal = actor(request)
         everything = nodes(request)
         first = next(iter(everything.values()))
-        return {**first.status(), "arm": first.name, "arms": {name: current.status() for name, current in everything.items()}, "principal": principal.model_dump(), "gist": gist.status if gist else None, "sim": sim.snapshot() if sim else None}
+        return {**first.status(), "arm": first.name, "arms": {name: current.status() for name, current in everything.items()}, "principal": principal.model_dump(), "gist": gist.status if gist else None, "sim": sim.snapshot() if sim else None, "cameras": {name: camera.status() for name, camera in cameras.items()}}
+
+    @app.post("/api/sim/hand")
+    async def sim_hand(request: Request):
+        actor(request, "operator")
+        if not sim:
+            raise HTTPException(404)
+        body = await body_of(request)
+        current = pick(request, body.get("arm"))
+        joints = body.get("joints_deg")
+        gripper = body.get("gripper_deg")
+        sim.set_hand(current.arm.channel, np.radians(joints) if joints is not None else None, float(np.radians(gripper)) if gripper is not None else None)
+        return {"status": "moved"}
+
+    @app.post("/api/handguide")
+    async def handguide(request: Request):
+        actor(request, "operator")
+        body = await body_of(request)
+        current = pick(request, body.get("arm"))
+        await current.set_hand_guide(bool(body.get("on")))
+        return current.status()
+
+    @app.post("/api/command")
+    async def command(request: Request):
+        principal = actor(request, "operator")
+        body = await body_of(request)
+        text = body.get("text")
+        everything = nodes(request)
+        if isinstance(text, str) and text.strip().lower() in {"stop", "freeze", "halt"}:
+            for current in everything.values():
+                await current.stop("Stop command")
+            return {"done": ["stopped"]}
+        views = {name: policy.ArmView(name, current.kin, current.arm.q, current.home_q) for name, current in everything.items()}
+        steps = policy.plan(text, views)
+        used = {name for step in steps for name in step}
+        for name in used:
+            current = everything[name]
+            current.authorize(principal)
+            current.require_ready()
+            if any(controller.active for controller in current.controllers.values()):
+                raise ValueError(f"Stop VR, phone or HEBI control on the {name} arm first")
+        done = []
+        for step in steps:
+            results = await asyncio.gather(*(everything[name].move_to(move.q, move.width, policy_speed, reason="Command") for name, move in step.items()))
+            done.extend(move.note for move in step.values())
+            if not all(results):
+                return {"done": done, "interrupted": True}
+        return {"done": done}
+
+    @app.get("/api/camera/{name}.jpg")
+    async def camera_still(name: str, request: Request):
+        actor(request)
+        camera = cameras.get(name)
+        if camera is None:
+            raise HTTPException(404, "No camera on that arm")
+        for _ in range(30):
+            frame = await asyncio.to_thread(camera.frame)
+            if frame:
+                return Response(frame, media_type="image/jpeg")
+            await asyncio.sleep(0.1)
+        raise HTTPException(503, camera.status()["note"])
+
+    @app.get("/api/camera/{name}.mjpg")
+    async def camera_stream(name: str, request: Request):
+        actor(request)
+        camera = cameras.get(name)
+        if camera is None:
+            raise HTTPException(404, "No camera on that arm")
+
+        async def frames():
+            last = None
+            while not await request.is_disconnected():
+                frame = await asyncio.to_thread(camera.frame)
+                if frame and frame is not last:
+                    last = frame
+                    yield b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(frame)).encode() + b"\r\n\r\n" + frame + b"\r\n"
+                await asyncio.sleep(0.04)
+
+        return StreamingResponse(frames(), media_type="multipart/x-mixed-replace; boundary=frame")
 
     @app.post("/api/sim/temperature")
     async def sim_temperature(request: Request):

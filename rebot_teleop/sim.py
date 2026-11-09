@@ -26,6 +26,10 @@ BODY = ASSETS / "robot_body"
 GRIPPER_OPEN_RAD = math.radians(270.0)
 GRIPPER_RATE = math.radians(400.0)
 FINGER_TRAVEL = (0.05, 0.0715)
+CAMERA_SIZE = (320, 240)
+CAMERA_FOV_DEG = 70.0
+CAMERA_EVERY_S = 0.1
+CAMERA_IDLE_S = 3.0
 
 
 def find_meshes():
@@ -92,6 +96,10 @@ class SimArm:
         self.models = ["rs-06"] * 3 + ["rs-00"] * 4
         self.tip_link = None
         self.tip = (np.zeros(3), np.eye(3))
+        self.camera_link = None
+        self.camera_wanted = 0.0
+        self.camera_at = 0.0
+        self.frame = None
 
     def add_robstride_motor(self, motor_id, host, model):
         self.models[motor_id - 1] = model
@@ -186,6 +194,7 @@ class SimWorld:
         arm.joints = [names[f"joint{i}"] for i in range(1, 7)]
         arm.fingers = [names["gripper_joint1"], names["gripper_joint2"]]
         arm.tip_link = names["j_gripper_end"]
+        arm.camera_link = names.get("j_wrist_camera")
         p.setJointMotorControlArray(arm.body, arm.joints, p.VELOCITY_CONTROL, forces=[0.0] * 6)
         for joint, model in zip(arm.joints, arm.models):
             inertia = np.array(p.getDynamicsInfo(arm.body, joint)[2]) + ARMATURE[model]
@@ -240,6 +249,8 @@ class SimWorld:
                 self._check_contacts(p)
             if self.gui and tick % 250 == 0:
                 self._labels(p)
+            if tick % 20 == 0:
+                self._cameras(p)
             next_tick += self.dt
             delay = next_tick - time.perf_counter()
             if delay > 0:
@@ -315,6 +326,44 @@ class SimWorld:
                 arm.label = p.addUserDebugText(text, position, color, 1.1)
             else:
                 p.addUserDebugText(text, position, color, 1.1, replaceItemUniqueId=arm.label)
+
+    def _cameras(self, p):
+        now = time.monotonic()
+        for arm in list(self.arms.values()):
+            if arm.body is None or arm.camera_link is None or now - arm.camera_wanted > CAMERA_IDLE_S or now - arm.camera_at < CAMERA_EVERY_S:
+                continue
+            state = p.getLinkState(arm.body, arm.camera_link, computeForwardKinematics=True)
+            rotation = np.array(p.getMatrixFromQuaternion(state[5])).reshape(3, 3)
+            eye = np.array(state[4]) + rotation[:, 2] * 0.021
+            view = p.computeViewMatrix(eye.tolist(), (eye + rotation[:, 2]).tolist(), (-rotation[:, 0]).tolist())
+            width, height = CAMERA_SIZE
+            projection = p.computeProjectionMatrixFOV(CAMERA_FOV_DEG * height / width, width / height, 0.01, 4.0)
+            renderer = p.ER_BULLET_HARDWARE_OPENGL if self.gui else p.ER_TINY_RENDERER
+            image = p.getCameraImage(width, height, view, projection, renderer=renderer)
+            pixels = np.reshape(np.asarray(image[2], dtype=np.uint8), (height, width, 4))[:, :, :3].copy()
+            with self.lock:
+                arm.frame = (now, pixels)
+                arm.camera_at = now
+
+    def camera_frame(self, channel):
+        with self.lock:
+            arm = self.arms[channel]
+            arm.camera_wanted = time.monotonic()
+            return arm.frame
+
+    def set_hand(self, channel, joints=None, gripper=None):
+        with self.lock:
+            arm = self.arms[channel]
+            if arm.enabled:
+                raise ValueError("The simulated motors are on; release torque before moving the arm by hand")
+            if joints is not None:
+                values = np.asarray(joints, dtype=float)
+                if values.shape != (6,) or not np.isfinite(values).all():
+                    raise ValueError("Six finite joint angles are required")
+                arm.pos[:6] = values
+            if gripper is not None:
+                arm.pos[6] = float(gripper)
+                arm.mit[6] = (float(gripper), 0.0, 0.0, 0.0, 0.0)
 
     def snapshot(self):
         with self.lock:

@@ -18,3 +18,8 @@ label{display:block;margin:8px 0}.check{display:flex;gap:8px;align-items:center}
 #toast.error{background:#8e3231}[hidden]{display:none!important}
 .route{display:flex;gap:14px;align-items:center;margin:12px 0}.route img{width:150px;height:150px;image-rendering:pixelated;border:1px solid #dde5e2;border-radius:6px}.applink{display:inline-block;margin:4px 0;padding:6px 10px;border-radius:6px;background:#c5f86b;color:#1d2b14;font-weight:600;text-decoration:none}
 .warm{color:#c2410c;font-weight:600}
+
+#command { flex: 1; min-width: 12rem; font: inherit; padding: .5rem; }
+.cameras { display: flex; flex-wrap: wrap; gap: .75rem; }
+.cameras figure { margin: 0; flex: 1 1 280px; max-width: 480px; }
+.cameras img { width: 100%; border-radius: 6px; background: #111; display: block; }
