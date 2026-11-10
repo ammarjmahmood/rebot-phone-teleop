@@ -67,15 +67,13 @@ class Robot:
         token = token or os.environ.get("REBOT_TOKEN", "")
         headers = {"Authorization": f"Bearer {token}"} if token else {}
         self.client = httpx.Client(base_url=self.url, timeout=120, headers=headers)
-        code = code if code is not None else os.environ.get("REBOT_CODE", "")
+        self.code = code if code is not None else os.environ.get("REBOT_CODE", "")
+        self.token = token
         self.session = os.environ.get("REBOT_SESSION", "")
         if self.session:
             self.client.cookies.set("rebot_teleop", self.session)
         elif not token:
-            response = self.client.post("/api/session", json={"token": code} if code else {})
-            if response.status_code >= 400:
-                raise RobotError(f"Could not pair with {self.url}: {response.text}. Pass a pairing code from the robot computer")
-            self.session = response.json().get("session", "")
+            self._pair()
         self.speed_deg_s = speed_deg_s
         snapshot = self._get("/api/state")
         self.sim = bool(snapshot.get("sim"))
@@ -85,17 +83,49 @@ class Robot:
         if not self.sim and not allow_real:
             raise RobotError("This server drives real arms. Agents only move the simulator unless the person at the robot sets REBOT_ALLOW_REAL=1")
 
-    def _get(self, path):
-        response = self.client.get(path)
+    def _pair(self):
+        try:
+            response = self.client.post("/api/session", json={"token": self.code} if self.code else {})
+        except httpx.TransportError as error:
+            raise RobotError(f"Cannot reach the teleop server at {self.url} ({type(error).__name__}); is it running?") from error
+        if response.status_code >= 400:
+            raise RobotError(f"Could not pair with {self.url}: {response.text}. Pass a pairing code from the robot computer")
+        self.session = response.json().get("session", "")
+
+    def _send(self, method, path, body=None, **options):
+        for attempt in range(3):
+            try:
+                response = self.client.request(method, path, json=body, **options)
+            except httpx.TransportError as error:
+                if attempt == 2 or (method != "GET" and not isinstance(error, httpx.ConnectError)):
+                    raise RobotError(f"Cannot reach the teleop server at {self.url} ({type(error).__name__}); it may be restarting, try again in a few seconds") from error
+                time.sleep(1.0 + attempt)
+                continue
+            if response.status_code == 401 and not self.token and attempt < 2:
+                self._pair()
+                continue
+            return response
+        return response
+
+    def _get(self, path, **options):
+        response = self._send("GET", path, **options)
         if response.status_code >= 400:
             raise RobotError(_detail(response))
         return response.json()
 
     def _post(self, path, body):
-        response = self.client.post(path, json=body)
+        response = self._send("POST", path, body)
         if response.status_code >= 400:
             raise RobotError(_detail(response))
         return response.json()
+
+    def clear_faults(self):
+        cleared = []
+        for name, arm in self._get("/api/state")["arms"].items():
+            if arm.get("fault") or arm.get("estopped"):
+                self._post("/api/reset", {"arm": name})
+                cleared.append(name)
+        return {"cleared": cleared, "arms": self.state()["arms"]}
 
     def _arm(self, arm):
         if arm not in self.arms:
@@ -186,9 +216,9 @@ class Robot:
 
     def snapshot(self, name, path=None):
         if name == "overview":
-            response = self.client.get("/api/sim/view.jpg")
+            response = self._send("GET", "/api/sim/view.jpg")
         else:
-            response = self.client.get(f"/api/camera/{name}.jpg")
+            response = self._send("GET", f"/api/camera/{name}.jpg")
         if response.status_code >= 400:
             raise RobotError(_detail(response))
         if path:
