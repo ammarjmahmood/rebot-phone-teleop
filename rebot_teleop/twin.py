@@ -1,141 +1,106 @@
-import argparse
-import threading
-import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
-import httpx
+import hashlib
+import json
+import math
+from pathlib import Path
 import numpy as np
-from rebot_teleop.camera import SimView
-from rebot_teleop.kinematics import mount_placement
-from rebot_teleop.sim import SimWorld
+import pinocchio as pin
+from rebot_teleop import config as C
+from rebot_teleop.kin import visuals
 
-PAGE = """<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>reBot mirror</title><style>body{margin:0;background:#111;color:#ddd;font:14px system-ui}#v{width:100%;max-width:960px;display:block;margin:auto;touch-action:none;cursor:grab}
-.bar{text-align:center;padding:8px}button{margin:2px;padding:6px 10px}#j{white-space:pre;font:12px monospace;text-align:center}</style></head><body>
-<img id="v" draggable="false"><div class="bar"><button data-v="90,-10">Face</button><button data-v="180,-12">Left side</button><button data-v="0,-12">Right side</button>
-<button data-v="270,-12">Back</button><button data-v="90,-80">Top</button><button data-z="0.8">Closer</button><button data-z="1.25">Farther</button></div><div id="j"></div>
-<script>
-const s={yaw:120,pitch:-15,d:1.9},v=document.getElementById('v');let drag=null,t;
-function go(){clearTimeout(t);t=setTimeout(()=>v.src=`/view.mjpg?yaw=${s.yaw.toFixed(0)}&pitch=${s.pitch.toFixed(0)}&distance=${s.d.toFixed(2)}`,120)}
-v.onpointerdown=e=>{drag={x:e.clientX,y:e.clientY,yaw:s.yaw,pitch:s.pitch};v.setPointerCapture(e.pointerId)};
-v.onpointermove=e=>{if(!drag)return;s.yaw=drag.yaw-(e.clientX-drag.x)*.5;s.pitch=Math.max(-85,Math.min(30,drag.pitch-(e.clientY-drag.y)*.4));go()};
-v.onpointerup=v.onpointercancel=()=>drag=null;
-document.onclick=e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.v)[s.yaw,s.pitch]=b.dataset.v.split(',').map(Number);if(b.dataset.z)s.d=Math.max(.5,Math.min(4,s.d*b.dataset.z));go()};
-setInterval(async()=>{try{document.getElementById('j').textContent=await (await fetch('/joints')).text()}catch(e){}},500);go();
-</script></body></html>"""
+CACHE = C.DATA / "mesh_cache"
+MESH_ROOTS = (C.ROOT / "meshes", Path.home() / "rebot-phone-teleop" / "meshes")
+STL_DTYPE = np.dtype([("normal", "<f4", 3), ("v", "<f4", (3, 3)), ("attr", "<u2")])
 
 
-def serve(world, port, latest):
-    view = SimView(world)
-
-    class Handler(BaseHTTPRequestHandler):
-        def log_message(self, *args):
-            pass
-
-        def do_GET(self):
-            url = urlparse(self.path)
-            query = {k: float(v[0]) for k, v in parse_qs(url.query).items() if k in ("yaw", "pitch", "distance")}
-            if url.path == "/":
-                body = PAGE.encode()
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-            elif url.path == "/joints":
-                body = latest.get("text", "").encode()
-                self.send_response(200)
-                self.send_header("Content-Type", "text/plain")
-                self.end_headers()
-                self.wfile.write(body)
-            elif url.path == "/view.mjpg":
-                self.send_response(200)
-                self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
-                self.end_headers()
-                last = None
-                try:
-                    while True:
-                        frame = view.frame(query.get("yaw", 120.0), query.get("pitch", -15.0), query.get("distance", 1.9), 0.95)
-                        if frame and frame is not last:
-                            last = frame
-                            self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(frame)).encode() + b"\r\n\r\n" + frame + b"\r\n")
-                        time.sleep(0.04)
-                except (BrokenPipeError, ConnectionResetError):
-                    return
-            else:
-                self.send_error(404)
-
-    server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    return server
+def read_stl(path):
+    raw = Path(path).read_bytes()
+    if raw[:5].lower() == b"solid" and b"facet" in raw[:400]:
+        vertices = []
+        for line in raw.decode(errors="ignore").splitlines():
+            parts = line.split()
+            if parts and parts[0] == "vertex":
+                vertices.append([float(v) for v in parts[1:4]])
+        return np.asarray(vertices, dtype=np.float32).reshape(-1, 3, 3)
+    count = int(np.frombuffer(raw[80:84], dtype="<u4")[0])
+    return np.frombuffer(raw[84:84 + count * 50], dtype=STL_DTYPE)["v"].copy()
 
 
-def connect(url, code, wait=0.0):
-    client = httpx.Client(base_url=url.rstrip("/"), timeout=10)
-    deadline = time.monotonic() + wait
-    while True:
-        try:
-            response = client.post("/api/session", json={"token": code} if code else {})
-            break
-        except httpx.HTTPError:
-            if time.monotonic() > deadline:
-                raise SystemExit(f"Cannot reach {url}")
-            time.sleep(1.0)
-    if response.status_code >= 400:
-        raise SystemExit(f"Pairing failed: {response.text}; pass --code with a pairing code from the robot computer")
-    return client
+def decimate(triangles, cells=90):
+    if len(triangles) < 4000:
+        return triangles
+    points = triangles.reshape(-1, 3)
+    low, high = points.min(axis=0), points.max(axis=0)
+    size = max(float(np.max(high - low)) / cells, 1e-9)
+    keys = np.floor((points - low) / size).astype(np.int64)
+    _, inverse = np.unique(keys, axis=0, return_inverse=True)
+    inverse = inverse.reshape(-1)
+    sums = np.zeros((inverse.max() + 1, 3))
+    np.add.at(sums, inverse, points)
+    counts = np.bincount(inverse)[:, None]
+    centers = (sums / counts).astype(np.float32)
+    faces = inverse.reshape(-1, 3)
+    good = (faces[:, 0] != faces[:, 1]) & (faces[:, 1] != faces[:, 2]) & (faces[:, 0] != faces[:, 2])
+    return centers[faces[good]]
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Open a PyBullet window that mirrors the joint angles of a running reBot teleop server, real or simulated")
-    parser.add_argument("--url", default="http://127.0.0.1:8080", help="Address of the teleop server, for example the Jetson over Tailscale or the Cloudflare link")
-    parser.add_argument("--code", default="", help="Pairing code from Show pairing code on the robot computer; not needed on the same machine")
-    parser.add_argument("--rate", type=float, default=30.0)
-    parser.add_argument("--wait", type=float, default=0.0, help="Seconds to keep trying while the server starts")
-    parser.add_argument("--web", type=int, default=0, metavar="PORT", help="Show the mirror as a web page rendered on the GPU at http://this-computer:PORT instead of a PyBullet window, which can drop links of the second arm")
-    args = parser.parse_args()
-    client = connect(args.url, args.code, args.wait)
-    state = client.get("/api/state").json()
-    world = SimWorld(gui=not args.web, heat=0.0)
-    latest = {}
-    names = list(state["arms"])
-    for name in names:
-        arm = state["arms"][name]
-        world.add_arm(name, mount_placement(**arm["mount"]), np.radians(arm["joints_deg"]))
-    world.controller(names[0])
-    if args.web:
-        serve(world, args.web, latest)
-        print(f"Mirror page: http://127.0.0.1:{args.web}/ (also reachable from other devices on this network or tailnet)", flush=True)
-    print("Mirroring", ", ".join(names), "from", args.url, "(close the window or press Ctrl+C to stop)")
-    shown = 0.0
-    last_contacts = None
-    try:
-        while world.thread.is_alive():
-            try:
-                state = client.get("/api/state").json()
-            except httpx.HTTPError as error:
-                print("Lost the server:", error)
-                time.sleep(1.0)
-                continue
-            for name in names:
-                arm = state["arms"][name]
-                world.set_hand(name, np.radians(arm["joints_deg"]), float(np.radians(arm["gripper_deg"])))
-                with world.lock:
-                    world.arms[name].temperature[:] = [t if t is not None else 25.0 for t in arm["temperatures"]]
-            contacts = world.snapshot()["contacts"]
-            if contacts != last_contacts and contacts:
-                print("Touching in the model:", ", ".join(f"{c['arm']} link {c['link']} with {c['with']}" for c in contacts))
-            last_contacts = contacts
-            latest["text"] = "\n".join(f"{name:5s} " + ("  ".join(f"J{i + 1} {v:6.1f}" for i, v in enumerate(state["arms"][name]["joints_deg"])) if state["arms"][name].get("connected", True) else "offline") for name in names)
-            if time.monotonic() - shown > 1.0:
-                shown = time.monotonic()
-                print("  ".join(f"{name} " + " ".join(f"{v:6.1f}" for v in state["arms"][name]["joints_deg"]) + ("  hand guide" if state["arms"][name].get("hand_guide") else "") for name in names), flush=True)
-            time.sleep(1.0 / args.rate)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        world.close()
+def write_stl(triangles):
+    normals = np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0])
+    lengths = np.linalg.norm(normals, axis=1, keepdims=True)
+    normals = normals / np.where(lengths == 0, 1, lengths)
+    out = np.zeros(len(triangles), dtype=STL_DTYPE)
+    out["normal"] = normals
+    out["v"] = triangles
+    return b"\0" * 80 + np.uint32(len(triangles)).tobytes() + out.tobytes()
 
 
-if __name__ == "__main__":
-    main()
+def resolve(file):
+    if file.startswith("../meshes/"):
+        rest = file[len("../meshes/"):]
+        for root in MESH_ROOTS:
+            if (root / rest).exists():
+                return root / rest
+        return None
+    path = C.ASSETS / file
+    return path if path.exists() else None
+
+
+def mesh_bytes(key):
+    path = CACHE / f"{key}.stl"
+    return path.read_bytes() if path.exists() else None
+
+
+def build_mesh(source, scale):
+    digest = hashlib.sha1(f"{source}:{scale}:{source.stat().st_mtime}".encode()).hexdigest()[:16]
+    target = CACHE / f"{digest}.stl"
+    if not target.exists():
+        CACHE.mkdir(parents=True, exist_ok=True)
+        triangles = read_stl(source) * np.asarray(scale, dtype=np.float32)
+        target.write_bytes(write_stl(decimate(triangles)))
+    return digest
+
+
+def origin_matrix(xyz, rpy):
+    m = np.eye(4)
+    m[:3, :3] = pin.rpy.rpyToMatrix(*rpy)
+    m[:3, 3] = xyz
+    return np.round(m, 6).tolist()
+
+
+def scene():
+    parts = []
+    for item in visuals():
+        source = resolve(item["file"])
+        if source is None:
+            continue
+        key = build_mesh(source, item["scale"])
+        parts.append({"link": item["link"], "mesh": key, "origin": origin_matrix(item["xyz"], item["rpy"]), "rgba": item["rgba"]})
+    body = []
+    colors_file = C.ASSETS / "robot_body" / "colors.json"
+    colors = json.loads(colors_file.read_text()) if colors_file.exists() else {}
+    turn = origin_matrix([0.0, 0.0, C.POST_TOP_M], [0.0, 0.0, math.pi / 2])
+    for name, rgb in colors.items():
+        source = C.ASSETS / "robot_body" / f"{name}.stl"
+        if source.exists():
+            body.append({"mesh": build_mesh(source, [0.001] * 3), "origin": turn, "rgba": [*rgb, 1.0]})
+    post = {"size": [0.06, C.POST_W_M, C.POST_TOP_M], "center": [0.0, 0.0, C.POST_TOP_M / 2]}
+    return {"arm_parts": parts, "body": body, "post": post, "mounts": C.MOUNTS}

@@ -1,25 +1,36 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>reBot teleop VR</title>
-<link rel="stylesheet" href="/static/style.css">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>reBot VR</title>
+<style>
+body{margin:0;background:#0e1013;color:#e6e8eb;font:18px/1.45 system-ui,sans-serif;display:flex;min-height:100vh;align-items:center;justify-content:center}
+main{max-width:620px;padding:24px;text-align:center}
+h1{color:#9fd04a;margin:0 0 8px}
+button{font:inherit;font-size:24px;padding:18px 40px;border-radius:14px;border:0;background:#9fd04a;color:#0c1205;font-weight:700;margin:10px;cursor:pointer}
+button.alt{background:#2a2f38;color:#e6e8eb;font-size:18px;padding:12px 22px}
+#status{margin:14px 0;color:#c9cfd8;min-height:2.8em}
+#arms span{display:inline-block;margin:4px;padding:4px 12px;border-radius:999px;background:#2a2f38;font-size:15px}
+#arms span.ok{background:#9fd04a;color:#0c1205}
+#arms span.warn{background:#f2b33d;color:#1a1203}
+.help{color:#8b93a0;font-size:15px;text-align:left}
+img#feed{position:absolute;width:2px;height:2px;opacity:0;pointer-events:none}
+</style>
 </head>
 <body>
-<header><h1>reBot teleop VR</h1></header>
 <main>
-<section class="card">
-<form id="pair" hidden><label>Pairing code from the arm computer <input id="code" inputmode="numeric" autocomplete="off"></label><button class="primary" type="submit">Pair this headset</button></form>
-<div id="ready" hidden>
-<label>Where are you standing?
-<select id="view"><option value="behind">Behind the arm, facing the same way</option><option value="front">Facing the arm</option><option value="left">On the arm's left</option><option value="right">On the arm's right</option></select></label>
-<label class="check"><input type="checkbox" id="rotation" checked> Gripper rotation follows the controller</label>
-<p class="fine">Face the way you chose before entering VR. Hold a grip button to move: that arm copies your hand's movement and rotation from the moment you squeezed. Release to stop. The trigger closes that arm's gripper. With two arms the left controller drives the left arm and the right controller the right arm; with one arm use the right controller. A puts the right arm back to rest at its side, X the left. B homes the right arm, Y the left.</p>
-<div class="row"><button class="primary" id="enter">Enter VR</button><button id="exit" hidden>Stop VR control</button></div>
-</div>
-<p id="status">Connecting</p>
-</section>
+  <h1>reBot VR teleop</h1>
+  <div id="arms"></div>
+  <div id="status">Connecting to the robot...</div>
+  <button id="enter">Enter VR</button>
+  <button id="exit" class="alt" hidden>Exit VR</button>
+  <div class="help">
+    <p>Squeeze <b>grip</b> to move that arm, let go to hold. <b>Trigger</b> closes the gripper. Each arm starts from where it is; one arm works if the other is off.</p>
+    <p><b>Right stick click</b> shows or hides the camera panel, <b>B</b> switches camera. Hold <b>X</b> and push the <b>left stick</b> up or down to move the table.</p>
+  </div>
 </main>
+<img id="feed" alt="" crossorigin="anonymous">
 <script src="/static/quest.js"></script>
 </body>
 </html>

@@ -1,8 +1,4 @@
 #!/usr/bin/env bash
 cd "$(dirname "$0")/.." || exit 1
-if [ -f "$HOME/.rebot-teleop/agent.env" ]; then
-  set -a
-  source "$HOME/.rebot-teleop/agent.env"
-  set +a
-fi
+export REBOT_URL="${REBOT_URL:-http://127.0.0.1:8081}"
 exec .venv/bin/python -m rebot_teleop.mcp_server "$@"

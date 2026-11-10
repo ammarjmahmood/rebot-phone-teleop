@@ -1,941 +1,567 @@
 import asyncio
-import base64
-import fnmatch
-import hmac
 import ipaddress
 import json
-import os
-import re
-import shutil
-import subprocess
-import threading
-import urllib.request
+import math
 import time
-import uuid
 from contextlib import asynccontextmanager
-from pathlib import Path
-from urllib.parse import urlencode, urlparse
-import psutil
-import segno
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 import numpy as np
-from rebot_teleop import policy
-from rebot_teleop import tasks
-from rebot_teleop.agent import Robot
-from rebot_teleop import cap
-from rebot_teleop.camera import FolderCamera, SimCamera, SimView, UsbCamera, locate, look_at_pose, optical_pose, sim_capture, usb_capture
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from rebot_teleop.auth import Auth, pairing_ttl
-from rebot_teleop.controller import TeleopController
-from rebot_teleop.models import Principal
-from rebot_teleop.node import TeleopNode
-from rebot_teleop.sources import HebiSource, PushSource
+from rebot_teleop import config as C
+from rebot_teleop import links, twin
+from rebot_teleop.cameras import Cameras
+from rebot_teleop.kin import top_down
+from rebot_teleop.lift import Lift
+from rebot_teleop.robot import Robot
+from rebot_teleop.sequencer import Sequencer
+from rebot_teleop.teleop import Teleop
+
+TRUSTED = [ipaddress.ip_network(n) for n in ("127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "::1/128", "fd00::/8", "fe80::/10")]
 
 
-STATIC = Path(__file__).resolve().parent / "static"
-BRIDGES = ("docker", "br-", "veth", "virbr", "lo")
-
-
-def lan_addresses():
-    found = []
-    for name, entries in psutil.net_if_addrs().items():
-        if name.startswith(BRIDGES):
-            continue
-        for entry in entries:
-            if entry.family.name != "AF_INET":
-                continue
-            address = ipaddress.ip_address(entry.address)
-            if address.is_loopback or address.is_link_local:
-                continue
-            found.append((address in ipaddress.ip_network("100.64.0.0/10"), name, entry.address))
-    return [(name, address) for _, name, address in sorted(found)]
-
-
-def route_label(interface):
-    if interface == "Cloudflare":
-        return "Cloudflare"
-    if interface.startswith(("tailscale", "ts")):
-        return "Tailscale"
-    if interface.startswith(("wl", "wifi")):
-        return "WiFi"
-    if interface.startswith("l4tbr"):
-        return "USB cable"
-    if interface.startswith(("en", "eth")):
-        return "Ethernet"
-    return interface
-
-
-def app_link(url, code):
-    return "rebotteleop://pair?" + urlencode({"url": url, "code": code})
-
-
-def tailscale_name():
+def trusted(host):
     try:
-        status = json.loads(subprocess.run(["tailscale", "status", "--json"], capture_output=True, text=True, timeout=5).stdout)
-        return status["Self"]["DNSName"].rstrip(".") or None
-    except (OSError, ValueError, KeyError, subprocess.SubprocessError):
-        return None
-
-
-class CloudflareTunnel:
-    def __init__(self, port):
-        self.port = port
-        self.process = None
-        self.url = None
-        self.status = "off"
-
-    def start(self):
-        binary = shutil.which("cloudflared") or str(Path.home() / ".local/bin/cloudflared")
-        if not Path(binary).exists():
-            self.status = "cloudflared is not installed; run scripts/setup_cloudflared.sh"
-            return
-        self.process = subprocess.Popen([binary, "tunnel", "--no-autoupdate", "--url", f"http://127.0.0.1:{self.port}"], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
-        self.status = "starting"
-        threading.Thread(target=self._read, daemon=True).start()
-
-    def _read(self):
-        for line in self.process.stderr:
-            match = re.search(r"https://[a-z0-9-]+\.trycloudflare\.com", line)
-            if match and not self.url:
-                self.url = match.group(0)
-                self.status = "running"
-        self.status = "stopped"
-
-    def stop(self):
-        if self.process and self.process.poll() is None:
-            self.process.terminate()
-
-
-class GistBookmark:
-    def __init__(self, token, gist_id, settings_path):
-        self.token = token
-        self.gist_id = gist_id
-        self.settings_path = settings_path
-        self.status = "off"
-
-    def _request(self, method, url, body):
-        request = urllib.request.Request(url, data=json.dumps(body).encode(), method=method, headers={"Authorization": f"Bearer {self.token}", "Accept": "application/vnd.github+json", "User-Agent": "rebot-teleop"})
-        with urllib.request.urlopen(request, timeout=15) as response:
-            return json.loads(response.read())
-
-    def publish(self, url):
-        content = f"# reBot teleop\n\nCurrent links, updated {time.strftime('%Y-%m-%d %H:%M')}:\n\n1. Meta Quest: [{url}/quest]({url}/quest)\n2. Control page from anywhere: [{url}]({url})\n\nPairing still needs a code from the arm computer.\n"
-        files = {"rebot-teleop.md": {"content": content}}
-        try:
-            if self.gist_id:
-                self._request("PATCH", f"https://api.github.com/gists/{self.gist_id}", {"files": files})
-            else:
-                created = self._request("POST", "https://api.github.com/gists", {"description": "reBot teleop links", "public": False, "files": files})
-                self.gist_id = created["id"]
-                self.settings_path.write_text(self.gist_id)
-            self.status = f"https://gist.github.com/{self.gist_id}"
-        except Exception as error:
-            self.status = f"gist update failed: {error}"
-
-
-DEFAULT_MOTION_WINDOW = 900
-
-
-def motion_window():
-    try:
-        value = int(os.environ.get("REBOT_TELEOP_MOTION_WINDOW", DEFAULT_MOTION_WINDOW))
+        address = ipaddress.ip_address(host)
     except ValueError:
-        return DEFAULT_MOTION_WINDOW
-    return value if 60 <= value <= 14400 else DEFAULT_MOTION_WINDOW
+        return host in ("testclient", "localhost")
+    return any(address in network for network in TRUSTED)
 
 
-def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, hebi_source=None):
-    auth = Auth(env_path)
-    port = int(os.environ.get("REBOT_TELEOP_PORT", "8080"))
-    https_port = int(os.environ.get("REBOT_TELEOP_HTTPS_PORT", "9443"))
-    lan = os.environ.get("REBOT_TELEOP_LAN") == "1"
-    hosts = lan_addresses() if lan else []
-    extra = [h.strip() for h in (auth.values.get("REBOT_TELEOP_ALLOWED_HOSTS", "") + "," + os.environ.get("REBOT_TELEOP_ALLOWED_HOSTS", "")).split(",") if h.strip()]
-    allowed = {"localhost", "127.0.0.1", "testserver", *[address for _, address in hosts], *[h for h in extra if "*" not in h]}
-    patterns = [h for h in extra if "*" in h]
-    if lan:
-        name = tailscale_name()
-        if name:
-            allowed.add(name)
-    policy_speed = float(np.radians(float(os.environ.get("REBOT_TELEOP_COMMAND_DEG_S", "30"))))
-    tunnel = CloudflareTunnel(port) if os.environ.get("REBOT_TELEOP_CLOUDFLARE") == "1" else None
-    if tunnel:
-        patterns.append("*.trycloudflare.com")
-    arms = arms or {"arm": os.environ.get("REBOT_TELEOP_CAN", "can0")}
-    sim = None
-    if os.environ.get("REBOT_TELEOP_SIM"):
-        from rebot_teleop.sim import SimWorld
-        sim = SimWorld(gui=False)
-    sim_view = SimView(sim) if sim else None
-    camera_devices = json.loads(os.environ.get("REBOT_TELEOP_CAMERAS", "{}") or "{}")
-    cameras = {}
-    fixed_poses = {}
-    for name, spec in (json.loads(os.environ.get("REBOT_TELEOP_CAMERA_POSES", "{}") or "{}")).items():
-        fixed_poses[name] = look_at_pose(spec["xyz"], spec["look_at"])
-    gist_file = Path(data_dir) / "gist_id"
-    token = auth.values.get("REBOT_TELEOP_GIST_TOKEN", "")
-    gist = GistBookmark(token, gist_file.read_text().strip() if gist_file.exists() else auth.values.get("REBOT_TELEOP_GIST_ID", ""), gist_file) if tunnel and token else None
+def rotation_from(value):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        if value == "down":
+            return top_down(0.0)
+        raise ValueError("rotation is 'down', a yaw in degrees, or a 3x3 matrix")
+    if isinstance(value, (int, float)):
+        return top_down(float(value))
+    m = np.asarray(value, dtype=float)
+    if m.shape != (3, 3):
+        raise ValueError("rotation must be 3x3")
+    return m
 
-    fixed_table = json.loads(os.environ.get("REBOT_TELEOP_TABLE", "") or "null")
-    camera_fov = float(os.environ.get("REBOT_TELEOP_CAMERA_FOV", "80"))
-    captures = {}
-    task_state = {"name": None, "seed": None}
 
-    def host_allowed(hostname):
-        return hostname in allowed or any(fnmatch.fnmatch(hostname or "", pattern) for pattern in patterns)
+def optical_pose(position, rotation, offset=0.021):
+    forward = rotation[:, 2]
+    down = rotation[:, 0]
+    right = np.cross(down, forward)
+    pose = np.eye(4)
+    pose[:3, :3] = np.column_stack([right, down, forward])
+    pose[:3, 3] = position + forward * offset
+    return pose
 
-    def build(name, channel):
-        folder = Path(data_dir) if len(arms) == 1 else Path(data_dir) / "arms" / name
-        if node_factory:
-            current = node_factory(name, channel)
-        else:
-            current = TeleopNode(folder, channel, name=name, controller_factory=sim.controller if sim else None)
-            if sim:
-                sim.add_arm(channel, current.kin.mount, current.home_q)
-        if name in camera_devices:
-            cameras[name] = UsbCamera(camera_devices[name])
-        elif sim and not node_factory:
-            cameras[name] = SimCamera(sim, channel)
-        if fixed_table:
-            current.set_obstacles([tasks.table_box(fixed_table)])
-        current.name = name
-        current.hand = name if name in {"left", "right"} else "right"
-        current.controllers = {
-            "app": TeleopController(current, "app", PushSource(), "align"),
-            "quest": TeleopController(current, "quest", PushSource(), "webxr"),
-            "hebi": TeleopController(current, "hebi", hebi_source or HebiSource(), "calibrated"),
-        }
-        return current
 
-    async def publish_gist():
-        for _ in range(120):
-            if tunnel.url:
-                await asyncio.to_thread(gist.publish, tunnel.url)
-                return
-            await asyncio.sleep(0.5)
+def look_at_pose(xyz, target):
+    position = np.asarray(xyz, dtype=float)
+    forward = np.asarray(target, dtype=float) - position
+    forward = forward / np.linalg.norm(forward)
+    right = np.cross(forward, [0.0, 0.0, 1.0])
+    right = right / (np.linalg.norm(right) or 1.0)
+    down = np.cross(forward, right)
+    pose = np.eye(4)
+    pose[:3, :3] = np.column_stack([right, down, forward])
+    pose[:3, 3] = position
+    return pose
+
+
+def create_app(sim=False, arms=("left", "right"), start_hardware=True):
+    robot = Robot(arms, sim=sim)
+    lift = Lift()
+    cameras = Cameras(sim=sim)
+    teleop = Teleop(robot, lift)
+    sequencer = Sequencer(robot, lift)
+    gist = links.Gist()
+    cap_runs = {"current": None, "events": [], "seq": 0}
+    scene_cache = {}
 
     @asynccontextmanager
     async def lifespan(app):
-        app.state.nodes = {name: build(name, channel) for name, channel in arms.items()}
-        for name, device in camera_devices.items():
-            if name not in app.state.nodes:
-                cameras[name] = FolderCamera(device[len("folder:"):]) if str(device).startswith("folder:") else UsbCamera(device)
-        for current in app.state.nodes.values():
-            await current.start()
-        if tunnel:
-            tunnel.start()
-            if gist:
-                asyncio.create_task(publish_gist())
+        if start_hardware:
+            robot.start()
+            cameras.start()
+            if not sim:
+                lift.start()
+                gist.run_forever()
         yield
-        if tunnel:
-            tunnel.stop()
-        for current in app.state.nodes.values():
-            await current.close()
-        for camera in cameras.values():
-            camera.close()
-        if sim:
-            sim.close()
+        teleop.stop()
+        robot.close()
+        cameras.close()
 
-    app = FastAPI(title="reBot teleop", lifespan=lifespan)
-    app.state.cap = {"running": False, "instruction": "", "model": "", "effort": "", "result": None, "saved": None, "events": [], "run": None}
-
-    def local(request):
-        return request.client.host in {"127.0.0.1", "::1", "testclient"} and request.url.hostname in {"127.0.0.1", "localhost", "testserver"} and not any(h in request.headers for h in ["forwarded", "x-forwarded-for", "x-forwarded-host"])
-
-    def bearer(header):
-        token = header.removeprefix("Bearer ").strip()
-        if not token:
-            return None
-        if hmac.compare_digest(token, auth.values["REBOT_TELEOP_ADMIN_TOKEN"]):
-            return Principal(id="api_owner", role="owner", local=False)
-        return auth.resolve(token, False)
-
-    def actor(request, role="viewer"):
-        principal = auth.resolve(request.cookies.get("rebot_teleop", ""), local(request)) or bearer(request.headers.get("authorization", ""))
-        if not principal:
-            raise HTTPException(401, "Pair this device first")
-        if {"viewer": 0, "operator": 1, "owner": 2}[principal.role] < {"viewer": 0, "operator": 1, "owner": 2}[role]:
-            raise HTTPException(403, "This action requires a higher role")
-        return principal
-
-    def device(request):
-        principal = actor(request, "owner")
-        if not principal.local:
-            raise HTTPException(403, "Do this at the arm computer")
-        return principal
-
-    def nodes(request):
-        return request.app.state.nodes
-
-    def pick(request, name):
-        everything = nodes(request)
-        if name is None and len(everything) == 1:
-            return next(iter(everything.values()))
-        if name not in everything:
-            raise ValueError("Choose an arm: " + ", ".join(everything))
-        return everything[name]
+    app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None)
+    app.state.robot, app.state.teleop, app.state.sequencer, app.state.cameras, app.state.lift = robot, teleop, sequencer, cameras, lift
+    app.mount("/static", StaticFiles(directory=C.STATIC), name="static")
 
     @app.middleware("http")
-    async def boundaries(request, call_next):
-        if not host_allowed(request.url.hostname):
-            return JSONResponse({"detail": "Host is not configured"}, status_code=403)
-        origin = request.headers.get("origin")
-        if origin and urlparse(origin).netloc != request.url.netloc:
-            return JSONResponse({"detail": "Origin is not allowed"}, status_code=403)
+    async def guard(request: Request, call_next):
+        if request.client and not trusted(request.client.host):
+            return JSONResponse({"detail": "Only the local network and the tailnet may use the robot"}, status_code=403)
         response = await call_next(request)
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["Cache-Control"] = "no-store" if request.url.path.startswith("/api") else "no-cache"
-        response.headers["Content-Security-Policy"] = "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'"
+        if request.url.path.startswith("/static") or request.url.path in ("/", "/quest", "/phone"):
+            response.headers["Cache-Control"] = "no-cache"
         return response
 
     @app.exception_handler(ValueError)
-    async def invalid(request, error):
-        return JSONResponse({"detail": str(error)}, status_code=409)
+    async def refused(request, error):
+        return JSONResponse({"detail": str(error)}, status_code=400)
 
-    @app.get("/health")
-    async def health():
-        return {"status": "ok"}
-
-    @app.post("/api/session")
-    async def session(request: Request):
-        principal = auth.resolve(request.cookies.get("rebot_teleop", ""), local(request))
-        if not principal:
-            if local(request):
-                principal = Principal(id=uuid.uuid4().hex, role="owner", local=True)
-            else:
-                body = await request.json()
-                token = body.get("token", "")
-                if not isinstance(token, str) or len(token) > 200:
-                    raise ValueError("Invalid pairing code")
-                principal = auth.login(token, request.client.host)
-        signed = auth.sign(principal)
-        response = JSONResponse({**principal.model_dump(), "session": signed})
-        response.set_cookie("rebot_teleop", signed, httponly=True, samesite="strict", secure=request.url.scheme == "https", max_age=28800)
-        return response
-
-    @app.get("/api/state")
-    async def state(request: Request):
-        principal = actor(request)
-        everything = nodes(request)
-        first = next(iter(everything.values()))
-        return {**first.status(), "arm": first.name, "arms": {name: current.status() for name, current in everything.items()}, "principal": principal.model_dump(), "gist": gist.status if gist else None, "sim": sim.snapshot() if sim else None, "cameras": {name: camera.status() for name, camera in cameras.items()}}
-
-    @app.post("/api/sim/hand")
-    async def sim_hand(request: Request):
-        actor(request, "operator")
-        if not sim:
-            raise HTTPException(404)
-        body = await body_of(request)
-        current = pick(request, body.get("arm"))
-        joints = body.get("joints_deg")
-        gripper = body.get("gripper_deg")
-        sim.set_hand(current.arm.channel, np.radians(joints) if joints is not None else None, float(np.radians(gripper)) if gripper is not None else None)
-        return {"status": "moved"}
-
-    @app.post("/api/handguide")
-    async def handguide(request: Request):
-        actor(request, "operator")
-        body = await body_of(request)
-        current = pick(request, body.get("arm"))
-        await current.set_hand_guide(bool(body.get("on")))
-        return current.status()
-
-    @app.post("/api/command")
-    async def command(request: Request):
-        principal = actor(request, "operator")
-        body = await body_of(request)
-        text = body.get("text")
-        everything = nodes(request)
-        if isinstance(text, str) and text.strip().lower() in {"stop", "freeze", "halt"}:
-            for current in everything.values():
-                await current.stop("Stop command")
-            return {"done": ["stopped"]}
-        return await run_steps(principal, everything, policy.plan(text, views_of(everything)), policy_speed, "Command")
-
-    def views_of(everything):
-        return {name: policy.ArmView(name, current.kin, current.arm.q, current.home_q) for name, current in everything.items()}
-
-    async def run_steps(principal, everything, steps, speed, reason):
-        used = {name for step in steps for name in step}
-        for name in used:
-            current = everything[name]
-            current.authorize(principal)
-            current.require_ready()
-            if any(controller.active for controller in current.controllers.values()):
-                raise ValueError(f"Stop VR, phone or HEBI control on the {name} arm first")
-        done = []
-        for step in steps:
-            results = await asyncio.gather(*(everything[name].move_to(move.q, move.width, speed, reason=reason) for name, move in step.items()))
-            done.extend(move.note for move in step.values())
-            if not all(results):
-                return {"done": done, "interrupted": True}
-        return {"done": done}
-
-    @app.post("/api/move")
-    async def move(request: Request):
-        principal = actor(request, "operator")
-        body = await body_of(request)
-        everything = nodes(request)
-        wanted = body.get("arms")
-        if not isinstance(wanted, dict) or not wanted:
-            raise ValueError("Send arms: {name: {joints_deg | tip_xyz | tip_delta, gripper_m}}")
-        unknown = [name for name in wanted if name not in everything]
-        if unknown:
-            raise ValueError("Unknown arm " + ", ".join(map(str, unknown)) + "; arms are " + ", ".join(everything))
-        views = views_of(everything)
-        step = {name: policy.target(views[name], spec) for name, spec in wanted.items()}
-        speed = policy_speed
-        if body.get("speed_deg_s") is not None:
-            speed = float(np.radians(np.clip(float(body["speed_deg_s"]), 2.0, float(np.degrees(policy_speed)) * 2)))
-        if body.get("dry_run"):
-            return {"ok": True, "plan": {name: {"joints_deg": np.degrees(move.q).round(1).tolist(), "tip_xyz": views[name].kin.pose(move.q)[0].round(4).tolist(), "note": move.note} for name, move in step.items()}}
-        return await run_steps(principal, everything, [step], speed, "Agent move")
-
-    async def capture_from(request, name):
-        everything = nodes(request)
-        if name == "overview":
-            if not sim:
-                raise HTTPException(404, "Only the simulator has an overview camera")
-            shot = await asyncio.to_thread(sim_capture, sim, "overview", 85, view_args(request))
-        elif name not in cameras:
-            raise HTTPException(404, "No camera called that; cameras are " + ", ".join([*cameras, *(["overview"] if sim else [])]))
-        elif sim and isinstance(cameras[name], SimCamera):
-            shot = await asyncio.to_thread(sim_capture, sim, everything[name].arm.channel)
-        elif name not in everything:
-            shot = None
-            for _ in range(30):
-                if isinstance(cameras[name], FolderCamera):
-                    shot = await asyncio.to_thread(cameras[name].capture, fixed_poses.get(name))
-                else:
-                    shot = await asyncio.to_thread(usb_capture, cameras[name], fixed_poses.get(name), camera_fov)
-                if shot:
-                    break
-                await asyncio.sleep(0.1)
-        else:
-            current = everything[name]
-            q = current.arm.q.copy()
-            position, rotation = current.kin.frame_pose("wrist_camera", q)
-            shot = None
-            for _ in range(30):
-                shot = await asyncio.to_thread(usb_capture, cameras[name], optical_pose(position, rotation), camera_fov)
-                if shot:
-                    break
-                await asyncio.sleep(0.1)
-        if not shot:
-            raise HTTPException(503, "No picture yet from " + name)
-        captures[name] = shot
-        return shot
-
-    def view_args(request):
-        query = request.query_params
-        return float(query.get("yaw", 120.0)), float(query.get("pitch", -15.0)), float(query.get("distance", 1.9)), float(query.get("height", 0.95))
-
-    @app.get("/api/camera/{name}/capture")
-    async def camera_capture(name: str, request: Request):
-        actor(request)
-        shot = await capture_from(request, name)
-        return {**shot["info"], "world_from_camera": None if shot["world_from_camera"] is None else np.round(shot["world_from_camera"], 5).tolist(), "has_depth": shot["depth_m"] is not None, "image_jpeg_base64": base64.b64encode(shot["jpeg"]).decode()}
-
-    @app.post("/api/camera/{name}/locate")
-    async def camera_locate(name: str, request: Request):
-        actor(request)
-        body = await body_of(request)
-        shot = captures.get(name) if body.get("use_last", True) else None
-        if shot is None:
-            shot = await capture_from(request, name)
-        plane = body.get("plane_z")
-        if plane is None and shot["depth_m"] is None:
-            table = (sim.table if sim else None) or fixed_table
-            plane = table["top"] if table else None
-        return {"points": locate(shot, body.get("pixels", []), plane), "camera": name}
-
-    @app.get("/api/sim/scene")
-    async def sim_scene(request: Request):
-        actor(request)
-        if not sim:
-            raise HTTPException(404)
-        return {**sim.scene_snapshot(), "renderer": getattr(sim, "render_note", "")}
-
-    @app.get("/api/sim/objects")
-    async def sim_objects(request: Request):
-        actor(request)
-        if not sim:
-            raise HTTPException(404, "Object positions only exist in the simulator; use the cameras on the real robot")
-        return sim.object_states()
-
-    @app.get("/api/sim/task")
-    async def sim_task_status(request: Request):
-        actor(request)
-        if not sim:
-            raise HTTPException(404, "Tasks run in the simulator")
-        result = {"tasks": {name: {"text": spec["text"], "arms": spec["arms"]} for name, spec in tasks.TASKS.items()}, "task": task_state["name"], "seed": task_state["seed"]}
-        if task_state["name"]:
-            states = sim.object_states()
-            ok, detail = tasks.check(task_state["name"], states)
-            result.update({"text": tasks.TASKS[task_state["name"]]["text"], "success": ok, "detail": detail})
-        return result
-
-    @app.post("/api/sim/task")
-    async def sim_task_reset(request: Request):
-        principal = actor(request, "operator")
-        if not sim:
-            raise HTTPException(404, "Tasks run in the simulator")
-        body = await body_of(request)
-        name = body.get("name")
-        everything = nodes(request)
-        if name in (None, "", "none"):
-            await asyncio.to_thread(sim.set_scene, {})
-            for current in everything.values():
-                current.set_obstacles([])
-            task_state.update(name=None, seed=None)
-            return {"task": None}
-        spec = tasks.scene(name, int(body.get("seed", 0)))
-        box = tasks.table_box(spec["table"])
-        for current in everything.values():
-            current.set_obstacles([box])
-        if body.get("ready", True):
-            ready = {arm: policy.Move(arm, np.radians(tasks.READY_DEG[arm]), policy.WIDTH_OPEN, f"{arm} ready") for arm in everything if arm in tasks.READY_DEG}
-            await asyncio.to_thread(sim.set_scene, {"table": spec["table"]})
-            moved = await run_steps(principal, everything, [ready], policy_speed, "Task reset")
-            if moved.get("interrupted"):
-                raise ValueError("Task reset was interrupted")
-        states = await asyncio.to_thread(sim.set_scene, spec)
-        task_state.update(name=name, seed=int(body.get("seed", 0)))
-        await asyncio.sleep(0.5)
-        return {"task": name, "seed": task_state["seed"], "text": tasks.TASKS[name]["text"], "arms": tasks.TASKS[name]["arms"], "scene": sim.object_states()}
-
-    @app.get("/api/sim/view.jpg")
-    async def sim_view_still(request: Request, yaw: float = 120.0, pitch: float = -15.0, distance: float = 1.9, height: float = 0.95):
-        actor(request)
-        if not sim:
-            raise HTTPException(404, "Only the simulator has an overview camera")
-        for _ in range(40):
-            frame = await asyncio.to_thread(sim_view.frame, yaw, pitch, distance, height)
-            if frame:
-                return Response(frame, media_type="image/jpeg")
-            await asyncio.sleep(0.05)
-        raise HTTPException(503, "The simulator view is not ready")
-
-    @app.get("/api/sim/view.mjpg")
-    async def sim_view_stream(request: Request, yaw: float = 120.0, pitch: float = -15.0, distance: float = 1.9, height: float = 0.95):
-        actor(request)
-        if not sim:
-            raise HTTPException(404, "Only the simulator has an overview camera")
-
-        async def frames():
-            last = None
-            while not await request.is_disconnected():
-                frame = await asyncio.to_thread(sim_view.frame, yaw, pitch, distance, height)
-                if frame and frame is not last:
-                    last = frame
-                    yield b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(frame)).encode() + b"\r\n\r\n" + frame + b"\r\n"
-                await asyncio.sleep(0.05)
-
-        return StreamingResponse(frames(), media_type="multipart/x-mixed-replace; boundary=frame")
-
-    @app.get("/api/camera/{name}.jpg")
-    async def camera_still(name: str, request: Request):
-        actor(request)
-        camera = cameras.get(name)
-        if camera is None:
-            raise HTTPException(404, "No camera called that")
-        for _ in range(30):
-            frame = await asyncio.to_thread(camera.frame)
-            if frame:
-                return Response(frame, media_type="image/jpeg")
-            await asyncio.sleep(0.1)
-        raise HTTPException(503, camera.status()["note"])
-
-    @app.get("/api/camera/{name}.mjpg")
-    async def camera_stream(name: str, request: Request):
-        actor(request)
-        camera = cameras.get(name)
-        if camera is None:
-            raise HTTPException(404, "No camera called that")
-
-        async def frames():
-            last = None
-            while not await request.is_disconnected():
-                frame = await asyncio.to_thread(camera.frame)
-                if frame and frame is not last:
-                    last = frame
-                    yield b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(frame)).encode() + b"\r\n\r\n" + frame + b"\r\n"
-                await asyncio.sleep(0.04)
-
-        return StreamingResponse(frames(), media_type="multipart/x-mixed-replace; boundary=frame")
-
-    @app.post("/api/sim/temperature")
-    async def sim_temperature(request: Request):
-        device(request)
-        if not sim:
-            raise HTTPException(404)
-        body = await body_of(request)
-        current = pick(request, body.get("arm"))
-        sim.set_temperature(current.arm.channel, int(body["joint"]) - 1, float(body["celsius"]))
-        return sim.snapshot()
-
-    async def body_of(request):
+    async def body(request):
         try:
-            return await request.json()
+            data = await request.json()
         except ValueError:
-            return {}
+            data = {}
+        return data if isinstance(data, dict) else {}
 
-    @app.post("/api/power")
-    async def power(request: Request):
-        device(request)
-        body = await body_of(request)
-        current = pick(request, body.get("arm"))
-        await current.power_on(bool(body.get("home")))
-        return current.status()
-
-    @app.post("/api/home")
-    async def home(request: Request):
-        principal = actor(request, "operator")
-        current = pick(request, (await body_of(request)).get("arm"))
-        current.authorize(principal)
-        active = next((c for c in current.controllers.values() if c.active), None)
-        task = asyncio.create_task(current.home_with(active, principal) if active else current.home())
-        await asyncio.sleep(0.05)
-        if task.done() and task.exception():
-            raise task.exception()
-        return {"status": "homing"}
-
-    @app.post("/api/stop")
-    async def stop(request: Request):
-        actor(request, "operator")
-        for current in nodes(request).values():
-            for controller in current.controllers.values():
-                await controller.stop("Stop pressed", keep_source=True)
-            await current.stop("Stop pressed", latch=True)
-        return {"status": "stopped"}
-
-    @app.post("/api/reset")
-    async def reset(request: Request):
-        device(request)
-        name = (await body_of(request)).get("arm")
-        for current in ([pick(request, name)] if name else nodes(request).values()):
-            current.reset()
-        return {"status": "reset"}
-
-    @app.post("/api/rest")
-    async def rest(request: Request):
-        device(request)
-        body = await body_of(request)
-        current = pick(request, body.get("arm"))
-        if body.get("save"):
-            return current.save_rest()
-        await current.rest()
-        return current.status()
-
-    @app.post("/api/release")
-    async def release(request: Request):
-        device(request)
-        current = pick(request, (await body_of(request)).get("arm"))
-        await current.release_torque()
-        return current.status()
-
-    @app.post("/api/gripper-range")
-    async def gripper_range(request: Request):
-        device(request)
-        body = await body_of(request)
-        return pick(request, body.get("arm")).save_gripper(body.get("which"))
-
-    @app.post("/api/gripper-state")
-    async def gripper_state(request: Request):
-        device(request)
-        body = await body_of(request)
-        return pick(request, body.get("arm")).gripper_is(body.get("which"))
-
-    @app.post("/api/remote")
-    async def remote(request: Request):
-        device(request)
-        enabled = bool((await body_of(request)).get("enabled"))
-        for current in nodes(request).values():
-            current.remote_until = time.monotonic() + motion_window() if enabled else 0
-            if not enabled:
-                for controller in current.controllers.values():
-                    await controller.stop("Phone motion revoked", keep_source=True)
-        return {"enabled": enabled}
-
-    @app.post("/api/pair")
-    async def pair(request: Request):
-        device(request)
-        code = auth.pair("operator")
-        addresses = []
-        routes = [(name, f"http://{address}:{port}", f"https://{address}:{https_port}/quest") for name, address in hosts]
-        if tunnel and tunnel.url:
-            routes.insert(0, ("Cloudflare", tunnel.url, tunnel.url + "/quest"))
-        for name, url, quest in routes:
-            link = app_link(url, code)
-            addresses.append({"interface": name, "label": route_label(name), "url": url, "quest": quest, "app_link": link, "qr": segno.make(link, error="m").svg_data_uri(scale=5, border=2)})
-        return {"code": code, "expires_in": pairing_ttl(), "addresses": addresses, "lan": lan, "cloudflare": tunnel.status if tunnel else None, "gist": gist.status if gist else None}
-
-    @app.post("/api/hebi/{action}")
-    async def hebi(action: str, request: Request):
-        principal = device(request)
-        body = await body_of(request)
-        current = pick(request, body.get("arm")).controllers["hebi"]
-        if action == "start":
-            await current.start(principal)
-        elif action == "stop":
-            await current.stop("HEBI stopped")
-        elif action == "calibrate":
-            current.calibrate(body.get("step"))
-        elif action == "address":
-            parts = [part.strip() for part in str(body.get("address") or "").split(",") if part.strip()]
-            for part in parts:
-                ipaddress.ip_address(part)
-            current.node.settings.set("hebi_addresses", parts)
-        elif action == "rotation":
-            current.use_rotation = bool(body.get("on"))
-        else:
-            raise HTTPException(404)
-        return current.status()
-
-    app.state.quest_resume = {}
-    app.state.quest_live = None
-
-    def quest_controllers(request):
-        return {current.hand: current.controllers["quest"] for current in nodes(request).values()}
-
-    @app.post("/api/quest/{action}")
-    async def quest(action: str, request: Request):
-        principal = actor(request, "operator")
-        body = await body_of(request)
-        controllers = quest_controllers(request)
-        if action == "start":
-            started = []
-            powered = {hand: current for hand, current in controllers.items() if current.node.arm.torque}
-            if not powered:
-                raise ValueError("Power the arm on first")
-            for hand, current in powered.items():
-                current.set_view(body.get("view", current.view))
-                current.use_rotation = bool(body.get("rotation", True))
-                await current.start(principal)
-                started.append(hand)
-            request.app.state.quest_live = principal.id
-            return {"hands": started}
-        if any(c.owner not in {None, principal.id} for c in controllers.values()):
-            raise ValueError("Another device has control")
-        if action == "stop":
-            for current in controllers.values():
-                await current.stop("Left VR")
-            request.app.state.quest_live = None
-            return {"status": "stopped"}
-        if action == "pose":
-            hands = body.get("hands") or {"right": {key: body[key] for key in ("position", "quaternion_wxyz", "inputs") if key in body}}
-            notes = {}
-            active = {}
-            resume = request.app.state.quest_resume
-            now = time.monotonic()
-            for hand, sample in hands.items():
-                current = controllers.get(hand)
-                if current is None or "position" not in sample:
-                    continue
-                inputs = {str(k)[:4]: float(v) for k, v in dict(sample.get("inputs", {})).items()}
-                squeezed = bool(inputs.get("b1"))
-                before = resume.get(hand, {})
-                resume[hand] = {"squeezed": squeezed, "at": before.get("at", 0.0)}
-                if not current.active:
-                    node = current.node
-                    others = any(other.active for other in node.controllers.values() if other is not current)
-                    if squeezed and not before.get("squeezed") and now - before.get("at", 0.0) > 1.0 and node.arm.torque and not node.estopped and not others and request.app.state.quest_live == principal.id:
-                        resume[hand]["at"] = now
-                        try:
-                            if node.fault or node.arm.fault:
-                                node.reset()
-                            await current.start(principal)
-                        except ValueError as error:
-                            notes[hand] = str(error)
-                    if not current.active:
-                        notes.setdefault(hand, "Stop is latched; reset it at the computer" if current.node.estopped else "Power the arm on first" if not current.node.arm.torque else current.node.fault or "Squeeze grip to take control")
-                        active[hand] = False
-                        continue
-                active[hand] = True
-                current.source.push(sample["position"], sample["quaternion_wxyz"], {k: (int(v) if k.startswith("b") else v) for k, v in inputs.items()})
-                notes[hand] = current.note
-            return {"notes": notes, "note": next((n for n in notes.values() if n), None), "hands": list(controllers), "active": active}
-        raise HTTPException(404)
-
-    @app.websocket("/ws/app")
-    async def app_socket(websocket: WebSocket):
-        if not host_allowed(websocket.url.hostname):
-            await websocket.close(code=4403)
-            return
-        origin = websocket.headers.get("origin")
-        if origin and urlparse(origin).netloc != websocket.url.netloc:
-            await websocket.close(code=4403)
-            return
-        principal = bearer(websocket.headers.get("authorization", "")) or auth.resolve(websocket.cookies.get("rebot_teleop", ""), False)
-        if principal is None or principal.role == "viewer":
-            await websocket.close(code=4401)
-            return
-        everything = websocket.app.state.nodes
-        chosen = {"name": next(iter(everything))}
-        await websocket.accept()
-        message_note = {"text": None}
-
-        def controller():
-            return everything[chosen["name"]].controllers["app"]
-
-        async def report():
-            while True:
-                current_node = everything[chosen["name"]]
-                current = controller()
-                status = current.status()
-                arm = current_node.arm
-                await websocket.send_json({
-                    "type": "status", "owner": current.owner == principal.id, "active": status["active"], "mode": status["mode"],
-                    "note": message_note["text"] or status["note"] or current_node.fault, "calibrated": status["ready"], "tilt": current.use_rotation, "view": current.view,
-                    "torque": arm.torque, "fault": arm.fault, "remote": principal.local or time.monotonic() < current_node.remote_until,
-                    "joints": [round(float(v) * 57.29578, 1) for v in arm.q], "gripper": round(float(arm.measured[6]) * 57.29578, 1), "phase": "TELEOP" if current_node.owner else "READY",
-                    "arm": chosen["name"], "arms": list(everything),
-                })
-                message_note["text"] = None
-                await asyncio.sleep(0.1)
-
-        reporter = asyncio.create_task(report())
-        last_grip = {"value": None}
-        try:
-            while True:
-                message = await websocket.receive_json()
-                kind = message.get("type") if isinstance(message, dict) else None
-                try:
-                    if kind == "arm":
-                        name = message.get("arm")
-                        if name not in everything:
-                            raise ValueError("Unknown arm")
-                        if name != chosen["name"]:
-                            previous = controller()
-                            if previous.owner == principal.id:
-                                await previous.stop("Switched arm", keep_source=True)
-                            chosen["name"] = name
-                            last_grip["value"] = None
-                            message_note["text"] = f"Now controlling {name}"
-                        continue
-                    current = controller()
-                    current_node = everything[chosen["name"]]
-                    if kind == "pose":
-                        mine = current.active and current.owner == principal.id
-                        grip = message.get("grip")
-                        grip_changed = grip is not None and last_grip["value"] is not None and abs(float(grip) - last_grip["value"]) > 0.01
-                        last_grip["value"] = None if grip is None else float(grip)
-                        if (message.get("move") or grip_changed) and not mine:
-                            await current.start(principal)
-                            mine = True
-                        if mine:
-                            inputs = {"b1": 1 if message.get("move") else 0}
-                            if grip is not None:
-                                inputs["grip"] = float(grip)
-                            current.source.push([float(v) for v in message["p"]][:3], [float(v) for v in message["q"]][:4], inputs)
-                    elif kind == "start":
-                        current.use_rotation = bool(message.get("tilt", True))
-                        current.set_view(message.get("view", current.view))
-                        await current.start(principal)
-                    elif kind == "view":
-                        current.set_view(message.get("view"))
-                    elif kind == "tilt":
-                        current.use_rotation = bool(message.get("on"))
-                    elif kind in {"align", "forward"}:
-                        current.align()
-                        message_note["text"] = "Aligned"
-                    elif kind == "home":
-                        asyncio.create_task(current_node.home_with(current, principal) if current.active else current_node.home())
-                    elif kind == "stop":
-                        if current.owner == principal.id:
-                            await current.stop("Phone app stopped")
-                except (KeyError, TypeError, ValueError) as error:
-                    message_note["text"] = str(error) or "Request rejected"
-        except (WebSocketDisconnect, RuntimeError):
-            pass
-        finally:
-            reporter.cancel()
-            for current_node in everything.values():
-                current = current_node.controllers["app"]
-                if current.owner == principal.id:
-                    await current.stop("Phone app disconnected")
+    def full_status():
+        return {
+            **robot.status(), "teleop": teleop.status(), "sequencer": sequencer.status(), "lift": lift.status(),
+            "cameras": cameras.status(), "links": links.urls(), "gist": {"url": gist.url, "status": gist.status}, "time": time.time(),
+        }
 
     @app.get("/")
     async def index():
-        return FileResponse(STATIC / "index.html")
+        return FileResponse(C.STATIC / "index.html")
 
     @app.get("/quest")
-    async def quest_page():
-        return FileResponse(STATIC / "quest.html")
+    async def quest():
+        return FileResponse(C.STATIC / "quest.html")
 
-    @app.get("/cap")
-    async def cap_page():
-        return FileResponse(STATIC / "cap.html")
+    @app.get("/phone")
+    async def phone():
+        return FileResponse(C.STATIC / "phone.html")
 
-    def cap_view(after=0):
-        state = app.state.cap
-        return {
-            "running": state["running"], "instruction": state["instruction"], "model": state["model"], "effort": state["effort"],
-            "result": state["result"], "saved": state["saved"], "events": state["events"][after:], "next": len(state["events"]),
-            "key": bool(shutil.which("claude") or (Path.home() / ".local" / "bin" / "claude").exists()),
-            "default_model": "", "efforts": cap.EFFORTS,
-        }
+    @app.get("/health")
+    async def health():
+        return {"ok": True}
 
-    @app.get("/api/cap")
-    async def cap_status(request: Request, after: int = 0):
-        device(request)
-        return cap_view(max(0, after))
+    @app.get("/api/status")
+    async def status():
+        return full_status()
+
+    @app.get("/api/scene")
+    async def scene():
+        if "scene" not in scene_cache:
+            scene_cache["scene"] = await asyncio.to_thread(twin.scene)
+        return scene_cache["scene"]
+
+    @app.get("/api/mesh/{key}")
+    async def mesh(key: str):
+        data = twin.mesh_bytes(key.replace("/", "").replace(".", ""))
+        if data is None:
+            return Response(status_code=404)
+        return Response(data, media_type="model/stl", headers={"Cache-Control": "max-age=86400"})
+
+    @app.post("/api/power")
+    async def power(request: Request):
+        data = await body(request)
+        if data.get("on", True):
+            return await asyncio.to_thread(robot.power_on, data.get("arm"))
+        teleop.release_all()
+        return await asyncio.to_thread(robot.power_off, data.get("arm"))
+
+    @app.post("/api/stop")
+    async def stop():
+        sequencer.stop_flag.set()
+        robot.stop()
+        lift.stop()
+        return {"stopped": True}
+
+    @app.post("/api/clear")
+    async def clear():
+        robot.clear_faults()
+        return {"cleared": True}
+
+    async def wait_done(data):
+        if data.get("wait", True):
+            await asyncio.to_thread(robot.wait, float(data.get("timeout", 60)))
+
+    @app.post("/api/move")
+    async def move(request: Request):
+        data = await body(request)
+        speed = float(data.get("speed_deg_s", C.MOVE_DEG_S))
+        if data.get("pose"):
+            duration = robot.go(data["pose"], data.get("arm"), speed)
+            await wait_done(data)
+            return {"pose": data["pose"], "duration_s": round(duration, 2), "state": robot.status()["arms"]}
+        unit = robot.unit(data.get("arm"))
+        if not unit.ready:
+            robot.ensure_powered(unit.name)
+        if not unit.ready:
+            raise ValueError(unit.arm.status()["note"] or f"The {unit.name} arm is not powered")
+        result = {}
+        if data.get("joints_deg") is not None:
+            joints = np.radians(np.asarray(data["joints_deg"], dtype=float))
+            if joints.shape != (6,):
+                raise ValueError("joints_deg needs six numbers")
+            result["duration_s"] = unit.arm.move(joints, speed)
+        elif data.get("tip_xyz") is not None or data.get("tip_delta") is not None:
+            current, rotation = unit.kin.pose(unit.arm.command[:6])
+            goal = np.asarray(data["tip_xyz"], dtype=float) if data.get("tip_xyz") is not None else current + np.asarray(data["tip_delta"], dtype=float)
+            q, err, duration = unit.move_tip(goal, rotation_from(data.get("rotation")) if data.get("rotation") is not None else rotation, speed)
+            result.update({"duration_s": duration, "reach_error_m": round(err, 4), "joints_deg": [round(math.degrees(v), 2) for v in q]})
+            if err > 0.01:
+                result["note"] = f"Out of reach by {err * 100:.1f} cm; moved as close as the arm can get"
+        if data.get("gripper_m") is not None:
+            unit.arm.grip(float(data["gripper_m"]))
+        await wait_done(data)
+        if data.get("gripper_m") is not None and data.get("wait", True):
+            await asyncio.sleep(0.6)
+        result["state"] = unit.status()
+        return result
+
+    @app.post("/api/reach")
+    async def reach(request: Request):
+        data = await body(request)
+        unit = robot.unit(data.get("arm"))
+        current, rotation = unit.kin.pose(unit.arm.command[:6] if unit.arm.torque else unit.arm.q)
+        rot = rotation_from(data.get("rotation")) if data.get("rotation") is not None else rotation
+        q, err, rerr = unit.kin.ik(np.asarray(data["tip_xyz"], dtype=float), rot, unit.arm.q, iterations=80)
+        return {"reachable": err < 0.01, "position_error_m": round(err, 4), "rotation_error_deg": round(math.degrees(rerr), 1), "joints_deg": [round(math.degrees(v), 2) for v in q]}
+
+    @app.post("/api/jog")
+    async def jog(request: Request):
+        data = await body(request)
+        unit = robot.unit(data.get("arm"))
+        if not unit.ready:
+            raise ValueError(f"Power the {unit.name} arm on first")
+        joint = int(data.get("joint", 0))
+        q = unit.arm.target[:6].copy()
+        q[joint] += math.radians(float(data.get("delta_deg", 5.0)))
+        unit.arm.move(q, 60.0)
+        return {"ok": True}
+
+    @app.post("/api/gripper")
+    async def gripper(request: Request):
+        data = await body(request)
+        arms = robot.pick(data.get("arm"))
+        for unit in arms:
+            if data.get("calibrate") in ("open", "closed"):
+                unit.arm.gripper_is(data["calibrate"])
+                continue
+            width = data.get("width_m")
+            if width is None:
+                width = C.GRIPPER_WIDTH_M if data.get("state", "open") == "open" else 0.0
+            unit.arm.grip(float(width))
+        return {"ok": True}
+
+    @app.post("/api/pose/save")
+    async def pose_save(request: Request):
+        data = await body(request)
+        return robot.save_pose(str(data.get("name") or "rest"), data.get("arm"))
+
+    @app.get("/api/poses")
+    async def poses():
+        return {"builtin": C.POSES_DEG, "saved": C.load("poses.json", {})}
+
+    @app.post("/api/lift")
+    async def lift_command(request: Request):
+        data = await body(request)
+        if data.get("speed") is not None:
+            return lift.set_speed(data["speed"])
+        if data.get("hold"):
+            lift.hold(data.get("action", "up"))
+            return lift.status()
+        return await asyncio.to_thread(lift.command, data.get("action", "stop"))
+
+    def camera_jpeg(name):
+        camera = cameras.get(name)
+        return camera.jpeg_bytes()
+
+    @app.get("/api/camera/{name}.jpg")
+    async def camera_still(name: str):
+        jpeg, _ = camera_jpeg(name)
+        for _ in range(30):
+            if jpeg:
+                break
+            await asyncio.sleep(0.05)
+            jpeg, _ = camera_jpeg(name)
+        if not jpeg:
+            return Response(status_code=503)
+        return Response(jpeg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/camera/{name}.mjpg")
+    async def camera_stream(name: str, request: Request):
+        cameras.get(name)
+
+        async def frames():
+            last = -1
+            while not await request.is_disconnected():
+                jpeg, count = camera_jpeg(name)
+                if jpeg and count != last:
+                    last = count
+                    yield b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(jpeg)).encode() + b"\r\n\r\n" + jpeg + b"\r\n"
+                await asyncio.sleep(0.01)
+
+        return StreamingResponse(frames(), media_type="multipart/x-mixed-replace; boundary=frame", headers={"Cache-Control": "no-store"})
+
+    def camera_geometry(name):
+        camera = cameras.get(name)
+        image, depth, _ = camera.frame()
+        if image is None:
+            raise ValueError(f"No picture from the {name} camera yet: {camera.status()['note']}")
+        height, width = image.shape[:2]
+        intrinsics = getattr(camera, "intrinsics", None)
+        if not intrinsics:
+            f = (width / 2) / math.tan(math.radians(cameras.fov.get(name, 70.0)) / 2)
+            intrinsics = {"fx": f, "fy": f, "cx": width / 2, "cy": height / 2}
+        if name in robot.units:
+            unit = robot.units[name]
+            position, rotation = unit.kin.camera_pose(unit.arm.q)
+            pose = optical_pose(position, rotation)
+        else:
+            pose = look_at_pose(cameras.torso_pose["xyz"], cameras.torso_pose["look_at"])
+        return image, depth, {"width": width, "height": height, **intrinsics}, pose
+
+    @app.post("/api/camera/{name}/locate")
+    async def camera_locate(name: str, request: Request):
+        data = await body(request)
+        image, depth, info, pose = camera_geometry(name)
+        plane = data.get("plane_z")
+        out = []
+        for u, v in data.get("pixels", []):
+            ray = np.array([(float(u) - info["cx"]) / info["fx"], (float(v) - info["cy"]) / info["fy"], 1.0])
+            if depth is not None and plane is None:
+                d = depth[min(max(int(v), 0), depth.shape[0] - 1), min(max(int(u), 0), depth.shape[1] - 1)] * 0.001
+                if d > 0:
+                    out.append({"xyz": np.round(pose[:3, :3] @ (ray * d) + pose[:3, 3], 4).tolist(), "method": "depth", "distance_m": round(float(d), 4)})
+                    continue
+            z = float(plane if plane is not None else C.load("table.json", {"top": 0.68})["top"])
+            direction = pose[:3, :3] @ ray
+            t = (z - pose[2, 3]) / direction[2] if abs(direction[2]) > 1e-6 else -1
+            out.append({"xyz": np.round(pose[:3, 3] + direction * t, 4).tolist() if t > 0 else None, "method": f"plane z={z}"})
+        return {"points": out, "camera_pose": np.round(pose, 4).tolist(), "info": info}
+
+    @app.get("/api/camera/{name}/info")
+    async def camera_info(name: str):
+        _, depth, info, pose = camera_geometry(name)
+        return {"info": info, "camera_pose": np.round(pose, 4).tolist(), "depth": depth is not None}
+
+    @app.post("/api/teleop/start")
+    async def teleop_start(request: Request):
+        data = await body(request)
+        return await asyncio.to_thread(teleop.start, data.get("source", "dashboard"))
+
+    @app.post("/api/teleop/stop")
+    async def teleop_stop():
+        return teleop.stop()
+
+    @app.post("/api/teleop/settings")
+    async def teleop_settings(request: Request):
+        return teleop.configure(**(await body(request)))
+
+    @app.get("/api/seq")
+    async def seq_list():
+        return {"sequences": sequencer.list(), **sequencer.status()}
+
+    @app.get("/api/seq/{name}")
+    async def seq_get(name: str):
+        return sequencer.get(name)
+
+    @app.put("/api/seq/{name}")
+    async def seq_put(name: str, request: Request):
+        data = await body(request)
+        data["name"] = data.get("name") or name
+        saved = sequencer.save(data)
+        if saved["name"] != name:
+            sequencer.delete(name)
+        return saved
+
+    @app.delete("/api/seq/{name}")
+    async def seq_delete(name: str):
+        return sequencer.delete(name)
+
+    @app.post("/api/seq/{name}/capture")
+    async def seq_capture(name: str, request: Request):
+        data = await body(request)
+        step = sequencer.capture(data.get("arm"), float(data.get("speed_deg_s", C.MOVE_DEG_S)), float(data.get("pause_s", 0)))
+        return sequencer.add(name, step, data.get("index"))
+
+    @app.post("/api/seq/{name}/step")
+    async def seq_step(name: str, request: Request):
+        data = await body(request)
+        step = data.get("step") or {}
+        if step.get("type") not in ("wait", "gripper", "lift", "pose"):
+            raise ValueError("Add a wait, gripper, lift or pose step")
+        return sequencer.add(name, step, data.get("index"))
+
+    @app.post("/api/seq/record/start")
+    async def seq_record_start(request: Request):
+        data = await body(request)
+        return sequencer.start_recording(data.get("arm"), float(data.get("rate_hz", 50)))
+
+    @app.post("/api/seq/record/stop")
+    async def seq_record_stop(request: Request):
+        data = await body(request)
+        step = sequencer.stop_recording(data.get("name"), data.get("label"))
+        return {"steps": len(step["t"]), "seconds": round(step["t"][-1] - step["t"][0], 2)}
+
+    @app.post("/api/seq/{name}/play")
+    async def seq_play(name: str, request: Request):
+        data = await body(request)
+        return await asyncio.to_thread(sequencer.play, name, None, data.get("loop"), data.get("speed"), data.get("start", 0))
+
+    @app.post("/api/seq/stop")
+    async def seq_stop():
+        return sequencer.stop()
+
+    @app.get("/api/qr.svg")
+    async def qr(text: str):
+        import io
+        import segno
+        out = io.BytesIO()
+        segno.make(text, error="m").save(out, kind="svg", scale=4, border=2, dark="#111", light="#fff")
+        return Response(out.getvalue(), media_type="image/svg+xml")
+
+    @app.get("/api/links")
+    async def links_list():
+        return {"links": links.urls(), "gist": {"url": gist.url, "status": gist.status}}
 
     @app.post("/api/cap")
     async def cap_start(request: Request):
-        device(request)
-        body = await body_of(request)
-        state = app.state.cap
-        if state["running"]:
+        from rebot_teleop.cap import CapRun
+        data = await body(request)
+        instruction = str(data.get("instruction", "")).strip()
+        if not instruction:
+            raise ValueError("Type what the robot should do")
+        current = cap_runs["current"]
+        if current is not None and current.alive:
             raise ValueError("A policy is already running; stop it first")
-        instruction = str(body.get("instruction", "")).strip()
-        model = str(body.get("model") or "").strip()
-        effort = str(body.get("effort") or "high")
-        if not instruction or len(instruction) > 2000:
-            raise ValueError("Type what the arms should do")
-        if model and not re.fullmatch(r"[a-z0-9][a-z0-9.\-\[\]]{1,80}", model):
-            raise ValueError("That model name does not look right")
-        if effort not in cap.EFFORTS:
-            raise ValueError("Choose an effort: " + ", ".join(cap.EFFORTS))
-        if not (shutil.which("claude") or (Path.home() / ".local" / "bin" / "claude").exists()):
-            raise ValueError("The claude CLI is not installed on this computer")
-        events = []
-        state.update(running=True, instruction=instruction, model=model, effort=effort, result=None, saved=None, events=events)
+        cap_runs["events"] = []
 
         def emit(kind, text, **extra):
-            events.append({"kind": kind, "text": text, "at": round(time.time(), 1), **extra})
+            cap_runs["seq"] += 1
+            cap_runs["events"].append({"id": cap_runs["seq"], "kind": kind, "text": text, "at": time.time(), **extra})
+            del cap_runs["events"][:-400]
 
-        def work():
-            run = None
-            try:
-                robot = Robot(f"http://127.0.0.1:{port}")
-                robot.ensure_ready()
-                run = cap.CliRun(f"http://127.0.0.1:{port}", instruction, model, effort, emit=emit)
-                state["run"] = run
-                ok = run.run()
-                saved = run.save()
-                state.update(result="done" if ok else "failed", saved=str(saved.relative_to(cap.ROOT)) if saved else None)
-            except Exception as error:
-                emit("error", f"{type(error).__name__}: {error}")
-                state["result"] = "failed"
-            finally:
-                state.update(running=False, run=None)
+        run = CapRun(f"http://127.0.0.1:{C.HTTP_PORT}", instruction, model=data.get("model") or None, effort=data.get("effort") or "medium", emit=emit)
+        cap_runs["current"] = run
+        run.start()
+        return {"started": True}
 
-        threading.Thread(target=work, name="code-as-policy", daemon=True).start()
-        return cap_view()
+    @app.get("/api/cap")
+    async def cap_status(after: int = 0):
+        current = cap_runs["current"]
+        return {"running": bool(current and current.alive), "events": [e for e in cap_runs["events"] if e["id"] > after]}
 
     @app.post("/api/cap/stop")
-    async def cap_stop(request: Request):
-        device(request)
-        run = app.state.cap.get("run")
-        if run is not None:
-            run.stop()
-        for current in nodes(request).values():
-            for controller in current.controllers.values():
-                await controller.stop("Stop pressed", keep_source=True)
-            await current.stop("Stop pressed", latch=True)
-        return cap_view()
+    async def cap_stop():
+        current = cap_runs["current"]
+        if current:
+            current.stop()
+        robot.stop()
+        return {"stopped": True}
 
-    app.mount("/static", StaticFiles(directory=STATIC), name="static")
+    @app.post("/api/policy/run")
+    async def policy_run(request: Request):
+        from rebot_teleop.agent import run_code
+        data = await body(request)
+        return await asyncio.to_thread(run_code, str(data.get("code", "")), float(data.get("timeout_s", 120)), f"http://127.0.0.1:{C.HTTP_PORT}")
+
+    def socket_trusted(websocket):
+        return websocket.client is None or trusted(websocket.client.host)
+
+    @app.websocket("/ws/state")
+    async def state_socket(websocket: WebSocket):
+        if not socket_trusted(websocket):
+            await websocket.close(code=4403)
+            return
+        await websocket.accept()
+        tick = 0
+        try:
+            while True:
+                message = {"twin": robot.twin(), "arms": {n: u.status() for n, u in robot.units.items()}, "teleop": teleop.status(), "sequencer": sequencer.status(), "lift": lift.status(), "sim": robot.sim}
+                if tick % 10 == 0:
+                    message.update({"cameras": cameras.status(), "links": links.urls(), "gist": {"url": gist.url, "status": gist.status}, "can": robot.status()["can"]})
+                await websocket.send_text(json.dumps(message))
+                tick += 1
+                await asyncio.sleep(0.05)
+        except (WebSocketDisconnect, RuntimeError):
+            pass
+
+    @app.websocket("/ws/teleop")
+    async def teleop_socket(websocket: WebSocket):
+        if not socket_trusted(websocket):
+            await websocket.close(code=4403)
+            return
+        await websocket.accept()
+        last_report = 0.0
+        try:
+            while True:
+                message = json.loads(await websocket.receive_text())
+                kind = message.get("type", "hands")
+                if kind == "hands":
+                    sent = teleop.push_hands(message, message.get("source", "quest"))
+                elif kind == "velocity":
+                    teleop.push_velocity(message.get("arm", "left"), message.get("linear", [0, 0, 0]), message.get("angular", [0, 0, 0]), message.get("grip"), message.get("clutch", True))
+                    sent = message.get("t")
+                elif kind == "start":
+                    result = await asyncio.to_thread(teleop.start, message.get("source", "quest"))
+                    await websocket.send_text(json.dumps({"type": "started", **result}))
+                    continue
+                elif kind == "stop":
+                    teleop.stop()
+                    continue
+                elif kind == "settings":
+                    teleop.configure(**message.get("settings", {}))
+                    continue
+                elif kind == "lift":
+                    if message.get("action") in ("up", "down"):
+                        lift.hold(message["action"])
+                    else:
+                        lift.release()
+                    continue
+                elif kind == "power":
+                    await asyncio.to_thread(robot.ensure_powered)
+                    continue
+                else:
+                    continue
+                now = time.monotonic()
+                if now - last_report > 0.2:
+                    last_report = now
+                    report = {"type": "status", "t": sent, "teleop": teleop.status(), "arms": {n: {"ready": u.ready, "note": u.status()["note"], "fault": u.arm.fault, "connected": u.arm.connected} for n, u in robot.units.items()}}
+                    await websocket.send_text(json.dumps(report))
+        except (WebSocketDisconnect, RuntimeError, ValueError):
+            pass
+        finally:
+            teleop.release_all()
+            lift.release()
+
+    @app.websocket("/ws/app")
+    async def app_socket(websocket: WebSocket):
+        if not socket_trusted(websocket):
+            await websocket.close(code=4403)
+            return
+        await websocket.accept()
+        chosen = {"arm": next(iter(robot.units))}
+
+        async def report():
+            while True:
+                unit = robot.units[chosen["arm"]]
+                await websocket.send_json({"type": "status", "owner": True, "active": teleop.active, "mode": "motion" if teleop.hands[chosen["arm"]].engaged else None, "note": unit.status()["note"], "calibrated": True, "tilt": teleop.settings.get("rotation", True), "view": teleop.settings.get("view"), "torque": unit.arm.torque, "fault": unit.arm.fault, "remote": True, "joints": [round(math.degrees(v), 1) for v in unit.arm.q], "gripper": round(math.degrees(unit.arm.measured[6]), 1), "phase": "TELEOP" if teleop.active else "READY", "arm": chosen["arm"], "arms": list(robot.units)})
+                await asyncio.sleep(0.1)
+
+        reporter = asyncio.create_task(report())
+        try:
+            while True:
+                message = await websocket.receive_json()
+                kind = message.get("type")
+                if kind == "arm" and message.get("arm") in robot.units:
+                    chosen["arm"] = message["arm"]
+                elif kind == "pose":
+                    w, x, y, z = (float(v) for v in message["q"][:4])
+                    grip = message.get("grip")
+                    teleop.push_hands({"yaw": 0.0, "hands": {chosen["arm"]: {"p": [float(v) for v in message["p"][:3]], "q": [x, y, z, w], "grip": 1.0 if message.get("move") else 0.0, "trigger": 0.0 if grip is None else 1.0 - float(grip)}}}, "phone app")
+                elif kind == "start":
+                    await asyncio.to_thread(teleop.start, "phone app")
+                elif kind == "stop":
+                    teleop.stop()
+                elif kind == "home":
+                    robot.go("home", chosen["arm"])
+        except (WebSocketDisconnect, RuntimeError, ValueError, KeyError, TypeError):
+            pass
+        finally:
+            reporter.cancel()
+            teleop.release_all()
+
     return app

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rebot-teleop"
-version = "0.1.0"
-description = "iPhone, HEBI Mobile I/O and Meta Quest teleoperation for the Seeed reBot Arm B601 RS"
+version = "0.2.0"
+description = "Dashboard, Quest and phone teleop, sequencer and Claude robot tools for the dual Seeed reBot B601 RS arms, in plain Python"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [{name = "Ammar Mahmood"}]
@@ -13,30 +13,27 @@ requires-python = ">=3.10,<3.13"
 dependencies = [
     "motorbridge==0.5.6",
     "pin==3.9.0",
-    "cmeel-urdfdom==4.0.1",
-    "cmeel-tinyxml2==10.0.0",
     "numpy==2.3.5",
     "fastapi==0.142.2",
     "uvicorn==0.54.0",
     "websockets==17.1",
-    "pydantic==2.13.5",
-    "python-dotenv==1.2.4",
     "psutil==7.2.2",
     "segno==1.6.6",
     "cryptography==50.0.2",
+    "httpx==0.28.1",
+    "opencv-python-headless==4.10.0.84",
+    "mcp==2.3.0",
 ]
 
 [project.optional-dependencies]
-test = ["pytest==8.4.2", "httpx==0.28.1"]
-sim = ["pybullet==3.2.7", "httpx==0.28.1", "pillow==13.0.0"]
-camera = ["opencv-python-headless==4.10.0.84"]
-agent = ["mcp==2.3.0", "httpx==0.28.1", "pillow==13.0.0", "scipy==1.16.3", "anthropic==2.7.0"]
+test = ["pytest==8.4.2"]
 
 [project.scripts]
-rebot-teleop = "rebot_teleop.__main__:main"
+rebot = "rebot_teleop.__main__:main"
+rebot-mcp = "rebot_teleop.mcp_server:main"
 
 [tool.setuptools]
 packages = ["rebot_teleop"]
 
 [tool.setuptools.package-data]
-rebot_teleop = ["static/*"]
+rebot_teleop = ["static/*", "static/vendor/*"]

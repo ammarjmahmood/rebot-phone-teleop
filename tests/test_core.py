@@ -1,0 +1,151 @@
+import math
+import os
+import tempfile
+import time
+
+os.environ["REBOT_DATA"] = tempfile.mkdtemp(prefix="rebot-test-")
+
+import numpy as np
+import pytest
+from fastapi.testclient import TestClient
+from rebot_teleop.robot import Robot
+from rebot_teleop.sequencer import Sequencer
+from rebot_teleop.teleop import Teleop, XR_TO_ROBOT
+
+
+def wait_until(check, timeout=5.0):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if check():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+@pytest.fixture
+def robot():
+    r = Robot(sim=True)
+    r.start()
+    assert wait_until(lambda: all(u.arm.connected for u in r.units.values()))
+    yield r
+    r.close()
+
+
+def test_power_on_holds_in_place(robot):
+    before = {n: u.arm.q.copy() for n, u in robot.units.items()}
+    robot.power_on()
+    time.sleep(0.3)
+    for name, unit in robot.units.items():
+        assert unit.arm.torque
+        assert np.max(np.abs(unit.arm.q - before[name])) < math.radians(0.5)
+
+
+def test_one_arm_works_alone(robot):
+    robot.units["right"].arm.close()
+    robot.factory.buses["can2"].dead = set(range(1, 8))
+    result = robot.power_on()
+    assert result["powered"] == ["left"]
+    assert robot.ensure_powered() == ["left"]
+
+
+def test_move_tip_is_smooth_and_reaches(robot):
+    robot.power_on()
+    unit = robot.units["left"]
+    robot.go("ready", "left")
+    robot.wait(20)
+    start, rotation = unit.kin.pose(unit.arm.command[:6])
+    goal = start + np.array([0.0, 0.0, 0.05])
+    _, err, _ = unit.move_tip(goal, rotation)
+    assert err < 0.003
+    samples = []
+    while unit.arm.busy:
+        samples.append(unit.arm.command[:6].copy())
+        time.sleep(0.01)
+    steps = np.abs(np.diff(np.array(samples), axis=0)).max()
+    assert steps < math.radians(3.0)
+    assert np.linalg.norm(unit.kin.pose(unit.arm.command[:6])[0] - goal) < 0.004
+
+
+def test_out_of_reach_goes_as_close_as_possible(robot):
+    unit = robot.units["left"]
+    q, err, _ = unit.kin.ik(np.array([0.3, -0.5, 0.8]), np.eye(3), unit.arm.q, iterations=80)
+    assert err > 0.05
+    assert np.all(q >= unit.kin.lower - 1e-9) and np.all(q <= unit.kin.upper + 1e-9)
+
+
+def test_quest_grip_moves_arm_relative_to_hand(robot):
+    robot.power_on()
+    robot.go("ready")
+    robot.wait(20)
+    teleop = Teleop(robot)
+    unit = robot.units["right"]
+    tip0 = unit.kin.pose(unit.arm.command[:6])[0]
+    hand = {"p": [0.0, 1.0, -0.3], "q": [0, 0, 0, 1], "grip": 1.0, "trigger": 0.0}
+    for _ in range(10):
+        teleop.push_hands({"yaw": 0.0, "hands": {"right": hand}})
+        time.sleep(0.01)
+    for _ in range(60):
+        hand["p"] = [0.0, 1.05, -0.3]
+        teleop.push_hands({"yaw": 0.0, "hands": {"right": hand}})
+        time.sleep(0.01)
+    assert wait_until(lambda: np.linalg.norm(unit.kin.pose(unit.arm.command[:6])[0] - (tip0 + XR_TO_ROBOT @ np.array([0, 0.05, 0]))) < 0.006, 3)
+    hand["grip"] = 0.0
+    teleop.push_hands({"yaw": 0.0, "hands": {"right": hand}})
+    time.sleep(0.1)
+    assert not teleop.hands["right"].engaged
+    teleop.stop()
+
+
+def test_gaze_yaw_turns_forward(robot):
+    teleop = Teleop(robot)
+    frame = teleop._frame(90.0)
+    forward_when_looking_left = frame @ np.array([-1.0, 0.0, 0.0])
+    assert np.allclose(forward_when_looking_left, [1.0, 0.0, 0.0], atol=1e-6)
+
+
+def test_sequencer_points_and_recording(robot):
+    robot.power_on()
+    seq = Sequencer(robot)
+    seq.add("demo", seq.capture())
+    robot.go("ready", "left")
+    robot.wait(20)
+    seq.add("demo", seq.capture("left"))
+    seq.start_recording("left", 50)
+    unit = robot.units["left"]
+    q = unit.arm.command[:6].copy()
+    q[0] += math.radians(10)
+    unit.arm.move(q, 60)
+    robot.wait(10)
+    step = seq.stop_recording("demo")
+    assert len(step["t"]) > 10
+    data = seq.get("demo")
+    assert [s["type"] for s in data["steps"]] == ["pose", "pose", "track"]
+    data["steps"].insert(0, data["steps"].pop())
+    seq.save(data)
+    seq.play("demo", speed=2.0)
+    assert wait_until(lambda: seq.playing is None, 30)
+    assert seq.progress is None
+
+
+def test_server_endpoints():
+    app = __import__("rebot_teleop.server", fromlist=["create_app"]).create_app(sim=True)
+    with TestClient(app) as client:
+        robot = app.state.robot
+        assert wait_until(lambda: all(u.arm.connected for u in robot.units.values()))
+        assert client.post("/api/power", json={"on": True}).json()["powered"] == ["left", "right"]
+        moved = client.post("/api/move", json={"arm": "left", "pose": "ready"}).json()
+        assert moved["duration_s"] > 0
+        result = client.post("/api/move", json={"arm": "left", "tip_delta": [0, 0, 0.03]}).json()
+        assert result["reach_error_m"] < 0.003
+        status = client.get("/api/status").json()
+        assert set(status["arms"]) == {"left", "right"}
+        with client.websocket_connect("/ws/state") as ws:
+            message = ws.receive_json()
+            assert "twin" in message and "base_link" in message["twin"]["left"]
+        with client.websocket_connect("/ws/teleop") as ws:
+            ws.send_json({"type": "hands", "yaw": 0, "hands": {"left": {"p": [0, 1, 0], "q": [0, 0, 0, 1], "grip": 1, "trigger": 0}}})
+            assert ws.receive_json()["type"] == "status"
+        client.put("/api/seq/test", json={"name": "test", "steps": []})
+        captured = client.post("/api/seq/test/capture", json={}).json()
+        assert len(captured["steps"]) == 1
+        assert client.post("/api/stop").json()["stopped"]

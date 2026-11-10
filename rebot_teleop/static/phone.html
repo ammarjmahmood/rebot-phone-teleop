@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>reBot phone</title>
+<style>
+html,body{margin:0;height:100%;background:#0e1013;color:#e6e8eb;font:15px system-ui,sans-serif;touch-action:none;overscroll-behavior:none;user-select:none;-webkit-user-select:none}
+body{display:flex;flex-direction:column}
+header{display:flex;gap:8px;align-items:center;padding:8px}
+header .grow{flex:1}
+button{font:inherit;border:0;border-radius:10px;padding:10px 14px;background:#2a2f38;color:#e6e8eb}
+button.on{background:#5aa9ff;color:#04101d;font-weight:700}
+button.stop{background:#ff5a52;color:#fff;font-weight:800}
+#cam{width:100%;max-height:34vh;object-fit:contain;background:#000}
+#status{font-size:12px;color:#8b93a0;padding:0 8px}
+.pads{flex:1;display:flex;gap:10px;padding:10px;align-items:center;justify-content:space-around}
+.pad{position:relative;width:42vw;max-width:220px;aspect-ratio:1;border-radius:50%;background:#171a1f;border:2px solid #2a2f38}
+.pad.v{width:22vw;max-width:110px;aspect-ratio:auto;height:42vw;max-height:220px;border-radius:30px}
+.knob{position:absolute;width:34%;aspect-ratio:1;border-radius:50%;background:#9fd04a;left:33%;top:33%;pointer-events:none}
+.pad.v .knob{width:70%;left:15%;top:35%}
+.label{position:absolute;bottom:-20px;width:100%;text-align:center;font-size:12px;color:#8b93a0}
+.row{display:flex;gap:8px;align-items:center;padding:6px 10px}
+input[type=range]{flex:1}
+</style>
+</head>
+<body>
+<header>
+  <button id="arm-left" class="on">Left</button><button id="arm-right">Right</button>
+  <span class="grow"></span>
+  <button id="stop" class="stop">STOP</button>
+</header>
+<img id="cam" alt="">
+<div id="status">Connecting...</div>
+<div class="pads">
+  <div class="pad" id="xy"><div class="knob"></div><div class="label">forward, back, left, right</div></div>
+  <div class="pad v" id="z"><div class="knob"></div><div class="label">up, down</div></div>
+</div>
+<div class="row"><span>Gripper</span><input id="grip" type="range" min="0" max="1" step="0.01" value="1"><span id="gripv">open</span></div>
+<div class="row"><span>Speed</span><input id="speed" type="range" min="0.03" max="0.3" step="0.01" value="0.12"><span id="speedv"></span></div>
+<div class="row"><span>Wrist</span><button id="yawl">turn left</button><button id="yawr">turn right</button><button id="cams">camera</button></div>
+<script>
+const $ = id => document.getElementById(id);
+let ws, arm = 'left', xy = [0, 0], z = 0, yaw = 0, grip = 1, camIndex = 0;
+const cams = ['torso', 'left', 'right'];
+function connect() {
+  ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws/teleop');
+  ws.onopen = () => { ws.send(JSON.stringify({ type: 'start', source: 'phone' })); $('status').textContent = 'Connected. Drag a pad to move the ' + arm + ' arm.'; };
+  ws.onmessage = e => { const m = JSON.parse(e.data); if (m.arms) $('status').textContent = Object.entries(m.arms).map(([n, a]) => `${n}: ${a.ready ? 'ready' : a.connected ? 'torque off' : 'offline'}`).join('   '); };
+  ws.onclose = () => { $('status').textContent = 'Reconnecting...'; setTimeout(connect, 500); };
+}
+connect();
+function setCam() { $('cam').src = `/api/camera/${cams[camIndex]}.mjpg`; }
+setCam();
+$('cams').onclick = () => { camIndex = (camIndex + 1) % cams.length; setCam(); };
+for (const name of ['left', 'right']) $('arm-' + name).onclick = () => { arm = name; $('arm-left').classList.toggle('on', name === 'left'); $('arm-right').classList.toggle('on', name === 'right'); };
+$('stop').onclick = () => fetch('/api/stop', { method: 'POST' });
+$('grip').oninput = e => { grip = +e.target.value; $('gripv').textContent = grip > 0.95 ? 'open' : grip < 0.05 ? 'closed' : Math.round(grip * 100) + '%'; };
+$('speedv').textContent = Math.round(+$('speed').value * 100) + ' cm/s';
+$('speed').oninput = e => { $('speedv').textContent = Math.round(+e.target.value * 100) + ' cm/s'; };
+function pad(element, vertical, set) {
+  const knob = element.querySelector('.knob');
+  let id = null;
+  const move = e => {
+    const r = element.getBoundingClientRect();
+    let dx = (e.clientX - r.left) / r.width * 2 - 1, dy = (e.clientY - r.top) / r.height * 2 - 1;
+    if (vertical) dx = 0;
+    const len = Math.hypot(dx, dy);
+    if (len > 1) { dx /= len; dy /= len; }
+    set(dx, dy);
+    knob.style.left = `calc(${(dx + 1) * 50}% - ${knob.offsetWidth / 2}px)`;
+    knob.style.top = `calc(${(dy + 1) * 50}% - ${knob.offsetHeight / 2}px)`;
+  };
+  element.addEventListener('pointerdown', e => { id = e.pointerId; element.setPointerCapture(id); move(e); });
+  element.addEventListener('pointermove', e => { if (e.pointerId === id) move(e); });
+  const end = e => { if (e.pointerId !== id) return; id = null; set(0, 0); knob.style.left = ''; knob.style.top = ''; };
+  element.addEventListener('pointerup', end);
+  element.addEventListener('pointercancel', end);
+}
+pad($('xy'), false, (dx, dy) => { xy = [-dy, -dx]; });
+pad($('z'), true, (dx, dy) => { z = -dy; });
+for (const [id, dir] of [['yawl', 1], ['yawr', -1]]) {
+  const b = $(id);
+  b.addEventListener('pointerdown', () => { yaw = dir; });
+  ['pointerup', 'pointerleave', 'pointercancel'].forEach(n => b.addEventListener(n, () => { yaw = 0; }));
+}
+setInterval(() => {
+  if (!ws || ws.readyState !== 1) return;
+  const s = +$('speed').value;
+  const moving = Math.hypot(xy[0], xy[1], z) > 0.05 || yaw !== 0;
+  ws.send(JSON.stringify({ type: 'velocity', t: Date.now(), arm, linear: [xy[0] * s, xy[1] * s, z * s], angular: [0, 0, yaw * 0.8], grip, clutch: moving }));
+}, 33);
+</script>
+</body>
+</html>

@@ -1,15 +1,13 @@
 .venv/
-.venv-hebi/
 __pycache__/
 *.pyc
 .pytest_cache/
 *.egg-info/
 build/
 .env
+meshes/
 ios/**/*.xcodeproj/
 ios/**/DerivedData/
 ios/**/build/
 xcuserdata/
 ios/**/Sources/Info.plist
-results/
-meshes/

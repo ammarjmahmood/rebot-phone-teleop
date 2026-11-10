@@ -1,51 +1,165 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>reBot teleop</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>reBot</title>
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-<header><h1>reBot teleop</h1><span id="connection">Connecting</span><button class="stop" id="stop">STOP</button></header>
+<header>
+  <div class="brand">reBot</div>
+  <nav id="tabs">
+    <button data-tab="home" class="on">Home</button>
+    <button data-tab="teleop">Teleop</button>
+    <button data-tab="seq">Sequencer</button>
+    <button data-tab="policy">Policy</button>
+  </nav>
+  <div id="pills"></div>
+  <button id="stop" class="stop" title="Hold every arm where it is (Space)">STOP</button>
+</header>
+<div id="toast"></div>
+
 <main>
-<div class="notice" id="fault" hidden></div>
-<section class="card" id="view-card" hidden>
-<h2>Simulation view</h2>
-<div class="sim-view"><img id="sim-view" alt="Simulated robot seen from outside" draggable="false"></div>
-<div class="row"><button data-view="front">Face</button><button data-view="left">Left side</button><button data-view="right">Right side</button><button data-view="back">Back</button><button data-view="top">Top</button><button data-zoom="0.8">Closer</button><button data-zoom="1.25">Farther</button><button id="view-toggle">Pause view</button></div>
-<p class="fine">Drag the picture to look around the robot.</p>
-</section>
-<div id="arms"></div>
-<section class="card">
-<h2>Commands</h2>
-<p class="fine">Type what the arms should do, for example raise left hand, bend elbows, move hands forward 5 cm, twist right wrist clockwise, open grippers, wave, go home. Join steps with then. The arms move at 30 degrees per second; STOP works as usual.</p>
-<div class="row"><input id="command" placeholder="raise hands then bend elbows" autocomplete="off"><button class="primary" id="command-run">Run</button></div>
-<div id="command-result" class="fine"></div>
-</section>
-<section class="card" id="camera-card" hidden>
-<h2>Wrist cameras</h2>
-<div class="row" id="camera-buttons"></div>
-<div class="cameras" id="cameras"></div>
-</section>
-<section class="card local">
-<h2>Phone and headset access</h2>
-<label class="check"><input type="checkbox" id="remote"> Allow phone and headset motion</label>
-<button id="pair">Show pairing code</button>
-<div id="pairing"></div>
-<p class="fine" id="gist"></p>
-</section>
-<section class="card local">
-<h2>HEBI Mobile I/O</h2>
-<p class="fine">Hold Move (B1) to move. A3 sets the gripper while moving, B2 opens, B3 closes, B8 homes. Calibrate once by moving the phone about 10 cm up, forward and left while holding Move.</p>
-<p id="hebi-status">Off</p>
-<label>Arm for HEBI <select id="hebi-arm"></select></label>
-<div class="row"><button class="primary" id="hebi-start">Start HEBI</button><button id="hebi-stop">Stop HEBI</button></div>
-<div class="row"><button data-cal="up">Calibrate up</button><button data-cal="forward">Calibrate forward</button><button data-cal="left">Calibrate left</button></div>
-<label>Phone Tailscale address, only when away from this WiFi <input id="hebi-address" placeholder="100.x.y.z"></label><button id="hebi-address-save">Save address</button>
+<section id="tab-home" class="tab on">
+  <div class="row top">
+    <div class="panel twin-panel">
+      <div class="panel-head"><b>Live twin</b><span class="muted" id="twin-note">follows the real joints, also when you move an arm by hand</span>
+        <span class="grow"></span><button class="small" data-view="front">Front</button><button class="small" data-view="side">Side</button><button class="small" data-view="top">Top</button></div>
+      <div class="twin" id="twin-home"></div>
+    </div>
+    <div class="panel cams-panel">
+      <div class="panel-head"><b>Cameras</b><span class="grow"></span><button class="small" id="cams-toggle">Pause</button></div>
+      <div class="cams" id="cams-home"></div>
+    </div>
+  </div>
+  <div class="row">
+    <div class="panel actions">
+      <div class="panel-head"><b>Robot</b><span class="grow"></span><span class="muted" id="mode-note"></span></div>
+      <div class="buttons">
+        <button class="go" id="power-all">Power on both</button>
+        <button id="off-all" title="Torque off: support the arms first">Power off both</button>
+        <button id="clear">Clear faults</button>
+        <span class="sep"></span>
+        <span class="muted">Poses</span>
+        <span id="pose-buttons"></span>
+        <button class="small" id="save-pose">Save current as pose</button>
+      </div>
+      <div class="lift" id="lift-home"></div>
+    </div>
+  </div>
+  <div class="row arms" id="arm-cards"></div>
 </section>
 
+<section id="tab-teleop" class="tab">
+  <div class="row top">
+    <div class="panel grow2">
+      <div class="panel-head"><b>Live camera</b><span class="grow"></span><span id="tele-cam-buttons"></span></div>
+      <div class="bigcam"><img id="tele-cam" alt=""></div>
+    </div>
+    <div class="panel side">
+      <div class="panel-head"><b>Start teleop</b></div>
+      <div class="start-grid">
+        <div class="card">
+          <h3>Meta Quest VR</h3>
+          <p class="muted">Open this on the Quest browser, press Enter VR. Squeeze grip to move an arm, trigger closes the gripper. Hold X and push the left stick to raise or lower the table.</p>
+          <a id="quest-link" class="link" target="_blank"></a>
+          <div id="quest-qr" class="qr"></div>
+        </div>
+        <div class="card">
+          <h3>Phone</h3>
+          <p class="muted">Touch sticks drive the tip; works on any phone browser.</p>
+          <a id="phone-link" class="link" target="_blank"></a>
+          <div id="phone-qr" class="qr"></div>
+        </div>
+      </div>
+      <div class="muted small-text">Bookmark: <a id="gist-link" target="_blank">GitHub gist</a> <span id="gist-status"></span></div>
+      <div class="buttons">
+        <button class="go" id="tele-start">Ready arms for teleop</button>
+        <button id="tele-stop">End teleop</button>
+      </div>
+      <div class="settings">
+        <label>You stand <select id="tele-view"><option value="behind">behind the robot</option><option value="front">facing the robot</option><option value="left">at its left</option><option value="right">at its right</option></select></label>
+        <label>Scale <input id="tele-scale" type="range" min="0.3" max="2.5" step="0.1"><span id="tele-scale-v"></span></label>
+        <label><input id="tele-rot" type="checkbox"> Follow hand rotation</label>
+        <label><input id="tele-gaze" type="checkbox"> Forward is where you look when you grip</label>
+      </div>
+      <div id="tele-status" class="mono"></div>
+      <div class="lift" id="lift-tele"></div>
+    </div>
+  </div>
+  <div class="row">
+    <div class="panel grow2"><div class="panel-head"><b>Twin</b></div><div class="twin short" id="twin-tele"></div></div>
+  </div>
+</section>
+
+<section id="tab-seq" class="tab">
+  <div class="row top">
+    <div class="panel seq-list">
+      <div class="panel-head"><b>Sequences</b><span class="grow"></span><button class="small" id="seq-new">New</button></div>
+      <div id="seq-items"></div>
+    </div>
+    <div class="panel grow2">
+      <div class="panel-head">
+        <input id="seq-name" class="title-input" placeholder="Sequence name">
+        <span class="grow"></span>
+        <div class="toggle" id="seq-mode"><button data-mode="point" class="on">Go to point</button><button data-mode="record">Record motion</button></div>
+      </div>
+      <div class="buttons">
+        <label>Arms <select id="seq-arm"><option value="">Both</option><option value="left">Left</option><option value="right">Right</option></select></label>
+        <span id="seq-point-tools"><button class="go" id="seq-capture">Save point</button>
+        <label>Speed <input id="seq-step-speed" type="number" value="45" min="5" max="180" step="5"> deg/s</label></span>
+        <span id="seq-record-tools" hidden><button class="rec" id="seq-record">Start recording</button><span id="seq-rec-note" class="muted"></span></span>
+        <span class="sep"></span>
+        <button class="small" id="seq-add-wait">+ Wait</button>
+        <button class="small" id="seq-add-open">+ Open gripper</button>
+        <button class="small" id="seq-add-close">+ Close gripper</button>
+        <button class="small" id="seq-add-lift">+ Table lift</button>
+      </div>
+      <p class="muted small-text" id="seq-hint">Move the arms with teleop, or power an arm off and move it by hand, then Save point. Record motion captures the real trajectory at 50 Hz.</p>
+      <ol id="seq-steps"></ol>
+      <div class="buttons play">
+        <button class="go" id="seq-play">Play</button>
+        <label><input type="checkbox" id="seq-loop"> Loop</label>
+        <label>Speed <input id="seq-speed" type="range" min="0.25" max="2" step="0.05" value="1"><span id="seq-speed-v">1.00x</span></label>
+        <button id="seq-stop">Stop</button>
+        <span class="grow"></span>
+        <button class="small danger" id="seq-delete">Delete sequence</button>
+      </div>
+      <div id="seq-progress" class="mono"></div>
+    </div>
+    <div class="panel side"><div class="panel-head"><b>Twin</b></div><div class="twin short" id="twin-seq"></div></div>
+  </div>
+</section>
+
+<section id="tab-policy" class="tab">
+  <div class="row top">
+    <div class="panel grow2">
+      <div class="panel-head"><b>Code as policy with Claude</b><span class="grow"></span><span class="muted">uses the Claude CLI signed in on this Jetson</span></div>
+      <textarea id="cap-text" rows="3" placeholder="Tell the robot what to do, for example: pick up the yellow block with the right arm and put it 15 cm to the side"></textarea>
+      <div class="buttons">
+        <button class="go" id="cap-run">Run</button>
+        <button id="cap-stop">Stop</button>
+        <label>Model <input id="cap-model" placeholder="CLI default"></label>
+        <label>Effort <select id="cap-effort"><option>low</option><option selected>medium</option><option>high</option><option>xhigh</option><option>max</option></select></label>
+      </div>
+      <div id="cap-log"></div>
+    </div>
+    <div class="panel side">
+      <div class="panel-head"><b>Run Python directly</b></div>
+      <textarea id="py-code" rows="12" class="mono" spellcheck="false">robot.power_on()
+print(robot.state())
+robot.move_tip_by("left", [0, 0, 0.05])
+</textarea>
+      <div class="buttons"><button class="go" id="py-run">Run code</button></div>
+      <pre id="py-out" class="mono"></pre>
+      <div class="panel-head"><b>Live view</b></div>
+      <div class="cams small" id="cams-policy"></div>
+      <p class="muted small-text">Any <code>claude</code> session started on the Jetson gets the <code>rebot</code> MCP tools automatically.</p>
+    </div>
+  </div>
+</section>
 </main>
-<div id="toast" hidden></div>
-<script src="/static/app.js"></script>
+<script type="module" src="/static/app.js"></script>
 </body>
 </html>

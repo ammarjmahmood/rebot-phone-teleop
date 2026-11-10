@@ -1,60 +1,48 @@
-import argparse
-import contextlib
-import io
 import math
 import os
+import subprocess
 import sys
+import tempfile
+import textwrap
 import time
-import traceback
-from pathlib import Path
-import httpx
 import numpy as np
+import httpx
 
-DEFAULT_URL = "http://127.0.0.1:8080"
-GUIDE = """\
-robot is connected to the reBot teleop server. Units: metres, degrees. Read docs/ROBOT_GUIDE.md for the full picture.
-World frame: x forward toward the eyes, y to the robot's left, z up, origin on the floor at the foot of the post.
-Arms are "left" (y > 0) and "right" (y < 0). Gripper width 0 (closed) to 0.05 m (open).
+DEFAULT_URL = os.environ.get("REBOT_URL", "http://127.0.0.1:8081")
 
-State and motion
-robot.state()                            per arm: joints_deg, tip_xyz, tip_rotation, gripper_deg, ready, fault
-robot.tip(arm) / robot.joints(arm)       gripper tip position in metres / six joint angles in degrees
-robot.ready()                            both arms to the ready pose above the table, grippers open
-robot.home()                             both arms to the hanging home pose
-robot.move_tip(arm, xyz, rotation=None)  tip to a point; rotation is a 3x3 hand orientation, e.g. robot.top_down(arm, yaw)
-robot.move_tip_by(arm, [dx, dy, dz])     shift the tip relative to now
-robot.move_joints(arm, [j1..j6])         joint angles in degrees
-robot.move(left={...}, right={...})      both arms together; spec keys joints_deg, tip_xyz, tip_delta, tip_rotation, gripper_m
-robot.can_reach(arm, xyz, rotation=None) True or False without moving
-robot.grip(arm, width_m)                 open or close
-robot.gripper_is(arm, "open")            tell the server the gripper is open (or "closed") now, when its reading is a whole turn off
-robot.top_down(arm, yaw_deg=0)           hand pointing straight down; fingers close along world x rotated by yaw
-robot.pick(arm, xyz, yaw_deg=0)          open, come down from above to xyz (object centre), close, lift 10 cm
-robot.place(arm, xyz, yaw_deg=0)         carry above xyz, lower until the held object's centre is at xyz, open, rise
-robot.say("raise left hand then wave")   plain word commands
-robot.stop()                             stop everything
+API = """robot = Robot()  (already made for you in run_policy)
 
-Seeing
-robot.capture(camera)                    (image HxWx3 uint8 RGB, info) for "left", "right" wrist cameras, "torso" (a fixed camera
-                                         on the real robot looking at both arms and the table, when fitted) or "overview" (sim)
-                                         info has fx, fy, cx, cy, width, height, world_from_camera (4x4, OpenCV axes)
-robot.locate(camera, [(u, v), ...], plane_z=None)
-                                         world xyz for pixels of the last capture; depth in sim, else a plane at plane_z
-                                         (defaults to the table top)
-robot.find_color(image, "red")           blobs of red, green, blue or yellow, biggest first: uv, pixels, box
-robot.find_objects(camera, "red", z_range=(0.66, 0.80))
-                                         capture, find blobs and locate them in 3D, keeping those in the height range;
-                                         parts of the robot can match a colour, so filter by height
-robot.snapshot(camera, path)             save a JPEG
+State
+  robot.state()                      dict per arm: joints_deg, tip_xyz, gripper_m, powered, note
+  robot.tip(arm) -> np.array xyz     robot.joints(arm) -> degrees
 
-Simulator only
-robot.objects()                          ground truth object positions; not allowed in camera only evaluations
-robot.task(name, seed)                   reset a benchmark task; returns its instructions
-robot.task_status()                      success and detail for the current task
+Power (holds still where the arm is; nothing moves)
+  robot.power_on(arm=None)           robot.power_off(arm=None)
 
-Every move is planned around the post, the head and the table, checked against joint limits and refused
-before anything moves if it cannot be done. A refused move raises RobotError with the reason.
-"""
+Move (smooth, waits until done unless wait=False; speed in deg/s, default 45)
+  robot.move_joints(arm, [6 deg], speed=45)
+  robot.move_tip(arm, xyz, rotation=None)      rotation: None keeps the hand angle, "down", a yaw in degrees for top down, or a 3x3 matrix
+  robot.move_tip_by(arm, [dx, dy, dz])
+  robot.go("home" | "ready" | saved pose name, arm=None)
+  robot.can_reach(arm, xyz, rotation=None) -> dict
+  robot.grip(arm, width_m)   robot.open(arm)   robot.close(arm)      width 0 closed to 0.05 open
+  robot.pick(arm, xyz, yaw_deg=0, approach=0.08, lift=0.10)
+  robot.place(arm, xyz, yaw_deg=0, approach=0.08)
+  robot.stop()                       holds every arm where it is
+
+Sequences and the table
+  robot.play(name, wait=True)        plays a sequence saved in the Sequencer tab
+  robot.lift(action, seconds)        action up or down, then stops
+
+Cameras: "left", "right" (wrists), "torso" (fixed HP60C with depth)
+  robot.capture(camera) -> BGR numpy image
+  robot.locate(camera, [[u, v], ...], plane_z=None) -> list of world xyz (torso uses depth)
+  robot.find_color(camera, "red" | "green" | "blue" | "yellow" | "orange") -> list of {pixel, xyz, area}
+
+World frame: metres, origin at the foot of the post, x forward, y to the robot's left, z up.
+The left arm works at y > 0 and the right arm at y < 0. Out of reach targets go as close as possible and report the error."""
+
+COLORS = {"red": [((0, 120, 70), (10, 255, 255)), ((170, 120, 70), (180, 255, 255))], "orange": [((10, 120, 80), (22, 255, 255))], "yellow": [((22, 100, 100), (35, 255, 255))], "green": [((36, 80, 50), (85, 255, 255))], "blue": [((90, 100, 50), (130, 255, 255))]}
 
 
 class RobotError(RuntimeError):
@@ -62,317 +50,179 @@ class RobotError(RuntimeError):
 
 
 class Robot:
-    def __init__(self, url=None, code=None, token=None, allow_real=None, speed_deg_s=None):
-        self.url = (url or os.environ.get("REBOT_URL") or DEFAULT_URL).rstrip("/")
-        token = token or os.environ.get("REBOT_TOKEN", "")
-        headers = {"Authorization": f"Bearer {token}"} if token else {}
-        self.client = httpx.Client(base_url=self.url, timeout=120, headers=headers)
-        self.code = code if code is not None else os.environ.get("REBOT_CODE", "")
-        self.token = token
-        self.session = os.environ.get("REBOT_SESSION", "")
-        if self.session:
-            self.client.cookies.set("rebot_teleop", self.session)
-        elif not token:
-            self._pair()
-        self.speed_deg_s = speed_deg_s
-        snapshot = self._get("/api/state")
-        self.sim = bool(snapshot.get("sim"))
-        self.arms = list(snapshot["arms"])
-        if allow_real is None:
-            allow_real = os.environ.get("REBOT_ALLOW_REAL") == "1"
-        if not self.sim and not allow_real:
-            raise RobotError("This server drives real arms. Agents only move the simulator unless the person at the robot sets REBOT_ALLOW_REAL=1")
+    def __init__(self, url=None, timeout=120.0):
+        self.url = (url or DEFAULT_URL).rstrip("/")
+        self.client = httpx.Client(base_url=self.url, timeout=timeout)
 
-    def _pair(self):
-        try:
-            response = self.client.post("/api/session", json={"token": self.code} if self.code else {})
-        except httpx.TransportError as error:
-            raise RobotError(f"Cannot reach the teleop server at {self.url} ({type(error).__name__}); is it running?") from error
-        if response.status_code >= 400:
-            raise RobotError(f"Could not pair with {self.url}: {response.text}. Pass a pairing code from the robot computer")
-        self.session = response.json().get("session", "")
-
-    def _send(self, method, path, body=None, **options):
+    def _call(self, method, path, body=None):
         for attempt in range(3):
             try:
-                response = self.client.request(method, path, json=body, **options)
+                response = self.client.request(method, path, json=body)
+                break
             except httpx.TransportError as error:
-                if attempt == 2 or (method != "GET" and not isinstance(error, httpx.ConnectError)):
-                    raise RobotError(f"Cannot reach the teleop server at {self.url} ({type(error).__name__}); it may be restarting, try again in a few seconds") from error
-                time.sleep(1.0 + attempt)
-                continue
-            if response.status_code == 401 and not self.token and attempt < 2:
-                self._pair()
-                continue
-            return response
-        return response
-
-    def _get(self, path, **options):
-        response = self._send("GET", path, **options)
+                if attempt == 2:
+                    raise RobotError(f"Cannot reach the robot server at {self.url}: {error}")
+                time.sleep(1.0)
         if response.status_code >= 400:
-            raise RobotError(_detail(response))
-        return response.json()
-
-    def _post(self, path, body):
-        response = self._send("POST", path, body)
-        if response.status_code >= 400:
-            raise RobotError(_detail(response))
-        return response.json()
-
-    def clear_faults(self):
-        cleared = []
-        for name, arm in self._get("/api/state")["arms"].items():
-            if arm.get("fault") or arm.get("estopped"):
-                self._post("/api/reset", {"arm": name})
-                cleared.append(name)
-        return {"cleared": cleared, "arms": self.state()["arms"]}
-
-    def _arm(self, arm):
-        if arm not in self.arms:
-            raise RobotError(f"Unknown arm {arm!r}; arms are {', '.join(self.arms)}")
-        return arm
-
-    def state(self):
-        full = self._get("/api/state")
-        keys = ["joints_deg", "tip_xyz", "tip_rotation", "gripper_deg", "home_deg", "torque", "ready", "fault", "homing", "hand_guide", "temperatures"]
-        arms = {name: {key: arm.get(key) for key in keys} for name, arm in full["arms"].items()}
-        result = {"sim": self.sim, "arms": arms}
-        if full.get("sim"):
-            result["contacts"] = full["sim"].get("contacts", [])
-        return result
-
-    def joints(self, arm):
-        return self.state()["arms"][self._arm(arm)]["joints_deg"]
-
-    def tip(self, arm):
-        return self.state()["arms"][self._arm(arm)]["tip_xyz"]
-
-    def power_on(self):
-        if not self.sim:
-            raise RobotError("Power the real arms from the dashboard at the robot; agents may not")
-        for name in self.arms:
-            self._post("/api/power", {"arm": name, "home": False})
-        time.sleep(1.0)
-        return self.state()
-
-    def ensure_ready(self):
-        arms = self._get("/api/state")["arms"]
-        if all(arm.get("ready") for arm in arms.values()):
-            return
-        if self.sim:
-            for name, arm in arms.items():
-                if arm.get("fault") or arm.get("estopped"):
-                    self.client.post("/api/reset", json={"arm": name})
-            self.power_on()
-            return
-        raise RobotError("The real arms are not powered; the person at the robot must press Power on")
-
-    def move(self, dry_run=False, speed_deg_s=None, **arms):
-        specs = {}
-        for name, spec in arms.items():
-            if spec is None:
-                continue
-            specs[self._arm(name)] = {key: _plain(value) for key, value in spec.items() if value is not None}
-        body = {"arms": specs, "dry_run": bool(dry_run)}
-        speed = speed_deg_s or self.speed_deg_s
-        if speed:
-            body["speed_deg_s"] = float(speed)
-        if not dry_run:
-            self.ensure_ready()
-        return self._post("/api/move", body)
-
-    def move_joints(self, arm, joints_deg, **options):
-        return self.move(**{arm: {"joints_deg": joints_deg}}, **options)
-
-    def move_tip(self, arm, xyz, rotation=None, **options):
-        return self.move(**{arm: {"tip_xyz": xyz, "tip_rotation": rotation}}, **options)
-
-    def move_tip_by(self, arm, delta, **options):
-        return self.move(**{arm: {"tip_delta": delta}}, **options)
-
-    def can_reach(self, arm, xyz, rotation=None):
-        try:
-            self.move(dry_run=True, **{arm: {"tip_xyz": xyz, "tip_rotation": rotation}})
-            return True
-        except RobotError:
-            return False
-
-    def grip(self, arm, width_m):
-        return self.move(**{arm: {"gripper_m": width_m}})
-
-    def gripper_is(self, arm, which):
-        return self._post("/api/gripper-state", {"arm": self._arm(arm), "which": which})
-
-    def say(self, text):
-        if text.strip().lower() not in {"stop", "halt", "freeze"}:
-            self.ensure_ready()
-        return self._post("/api/command", {"text": text})
-
-    def home(self):
-        return self.say("go home")
-
-    def stop(self):
-        return self._post("/api/command", {"text": "stop"})
-
-    def snapshot(self, name, path=None):
-        if name == "overview":
-            response = self._send("GET", "/api/sim/view.jpg")
-        else:
-            response = self._send("GET", f"/api/camera/{name}.jpg")
-        if response.status_code >= 400:
-            raise RobotError(_detail(response))
-        if path:
-            Path(path).write_bytes(response.content)
-            return str(path)
+            try:
+                detail = response.json().get("detail")
+            except ValueError:
+                detail = response.text
+            raise RobotError(str(detail))
+        if response.headers.get("content-type", "").startswith("application/json"):
+            return response.json()
         return response.content
 
-    def ready(self):
-        return self.say("get ready then open grippers")
+    def state(self):
+        arms = self._call("GET", "/api/status")["arms"]
+        return {name: {"joints_deg": a["joints_deg"], "tip_xyz": a["tip_xyz"], "gripper_m": a["gripper_m"], "powered": a["powered"], "connected": a["connected"], "note": a["note"] or a["fault"]} for name, a in arms.items()}
 
-    def top_down(self, arm, yaw_deg=0.0):
-        side = 1.0 if self._arm(arm) == "left" else -1.0
-        base = np.array([[0.0, -side, 0.0], [0.0, 0.0, side], [-1.0, 0.0, 0.0]])
-        turn = math.radians(float(yaw_deg))
-        spin = np.array([[math.cos(turn), -math.sin(turn), 0.0], [math.sin(turn), math.cos(turn), 0.0], [0.0, 0.0, 1.0]])
-        return spin @ base
+    def tip(self, arm):
+        return np.asarray(self.state()[arm]["tip_xyz"])
+
+    def joints(self, arm):
+        return np.asarray(self.state()[arm]["joints_deg"])
+
+    def power_on(self, arm=None):
+        return self._call("POST", "/api/power", {"arm": arm, "on": True})
+
+    def power_off(self, arm=None):
+        return self._call("POST", "/api/power", {"arm": arm, "on": False})
+
+    def _rot(self, rotation):
+        if rotation is None or isinstance(rotation, (str, int, float)):
+            return rotation
+        return np.asarray(rotation, dtype=float).tolist()
+
+    def move_joints(self, arm, joints_deg, speed=45.0, wait=True):
+        return self._call("POST", "/api/move", {"arm": arm, "joints_deg": list(map(float, joints_deg)), "speed_deg_s": speed, "wait": wait})
+
+    def move_tip(self, arm, xyz, rotation=None, speed=45.0, wait=True):
+        return self._call("POST", "/api/move", {"arm": arm, "tip_xyz": list(map(float, xyz)), "rotation": self._rot(rotation), "speed_deg_s": speed, "wait": wait})
+
+    def move_tip_by(self, arm, delta, rotation=None, speed=45.0, wait=True):
+        return self._call("POST", "/api/move", {"arm": arm, "tip_delta": list(map(float, delta)), "rotation": self._rot(rotation), "speed_deg_s": speed, "wait": wait})
+
+    def go(self, pose, arm=None, speed=45.0, wait=True):
+        return self._call("POST", "/api/move", {"pose": pose, "arm": arm, "speed_deg_s": speed, "wait": wait})
+
+    def home(self):
+        return self.go("home")
+
+    def ready(self):
+        return self.go("ready")
+
+    def can_reach(self, arm, xyz, rotation=None):
+        return self._call("POST", "/api/reach", {"arm": arm, "tip_xyz": list(map(float, xyz)), "rotation": self._rot(rotation)})
+
+    def grip(self, arm, width_m):
+        self._call("POST", "/api/gripper", {"arm": arm, "width_m": float(width_m)})
+        time.sleep(0.6)
+
+    def open(self, arm):
+        self.grip(arm, 0.05)
+
+    def close(self, arm):
+        self.grip(arm, 0.0)
+
+    def stop(self):
+        return self._call("POST", "/api/stop")
+
+    def top_down(self, yaw_deg=0.0):
+        from rebot_teleop.kin import top_down
+        return top_down(yaw_deg)
 
     def pick(self, arm, xyz, yaw_deg=0.0, approach=0.08, lift=0.10):
         xyz = np.asarray(xyz, dtype=float)
-        rotation = self.top_down(arm, yaw_deg)
-        self.move(**{arm: {"tip_xyz": xyz + [0, 0, approach], "tip_rotation": rotation, "gripper_m": 0.05}})
-        self.move(**{arm: {"tip_xyz": xyz, "tip_rotation": rotation}}, speed_deg_s=15)
-        self.grip(arm, 0.0)
-        self.wait(0.4)
-        return self.move(**{arm: {"tip_xyz": xyz + [0, 0, lift], "tip_rotation": rotation}}, speed_deg_s=15)
+        self.open(arm)
+        self.move_tip(arm, xyz + [0, 0, approach], yaw_deg)
+        self.move_tip(arm, xyz, yaw_deg, speed=25)
+        self.close(arm)
+        return self.move_tip(arm, xyz + [0, 0, lift], yaw_deg, speed=30)
 
     def place(self, arm, xyz, yaw_deg=0.0, approach=0.08):
         xyz = np.asarray(xyz, dtype=float)
-        rotation = self.top_down(arm, yaw_deg)
-        self.move(**{arm: {"tip_xyz": xyz + [0, 0, approach], "tip_rotation": rotation}})
-        self.move(**{arm: {"tip_xyz": xyz, "tip_rotation": rotation}}, speed_deg_s=15)
-        self.grip(arm, 0.05)
-        self.wait(0.3)
-        return self.move(**{arm: {"tip_xyz": xyz + [0, 0, approach], "tip_rotation": rotation}})
+        self.move_tip(arm, xyz + [0, 0, approach], yaw_deg)
+        self.move_tip(arm, xyz, yaw_deg, speed=25)
+        self.open(arm)
+        return self.move_tip(arm, xyz + [0, 0, approach], yaw_deg, speed=30)
+
+    def play(self, name, wait=True):
+        result = self._call("POST", f"/api/seq/{name}/play", {})
+        while wait:
+            time.sleep(0.2)
+            if not self._call("GET", "/api/seq")["playing"]:
+                break
+        return result
+
+    def lift(self, action, seconds=1.0):
+        self._call("POST", "/api/lift", {"action": action})
+        time.sleep(float(seconds))
+        return self._call("POST", "/api/lift", {"action": "stop"})
 
     def capture(self, camera):
-        from PIL import Image
-        import base64
-        data = self._get(f"/api/camera/{camera}/capture")
-        image = np.array(Image.open(io.BytesIO(base64.b64decode(data.pop("image_jpeg_base64")))).convert("RGB"))
-        data["world_from_camera"] = np.array(data["world_from_camera"])
-        return image, data
+        import cv2
+        data = self._call("GET", f"/api/camera/{camera}.jpg")
+        return cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+
+    def jpeg(self, camera):
+        return self._call("GET", f"/api/camera/{camera}.jpg")
 
     def locate(self, camera, pixels, plane_z=None):
-        body = {"pixels": [[float(u), float(v)] for u, v in pixels]}
-        if plane_z is not None:
-            body["plane_z"] = float(plane_z)
-        return [point["xyz"] for point in self._post(f"/api/camera/{camera}/locate", body)["points"]]
+        result = self._call("POST", f"/api/camera/{camera}/locate", {"pixels": [list(map(float, p)) for p in pixels], "plane_z": plane_z})
+        return [p["xyz"] for p in result["points"]]
 
-    @staticmethod
-    def find_color(image, color, min_pixels=12):
-        rgb = np.asarray(image, dtype=float)
-        r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
-        masks = {
-            "red": (r > 120) & (r > 1.8 * g) & (r > 1.8 * b),
-            "green": (g > 90) & (g > 1.4 * r) & (g > 1.4 * b),
-            "blue": (b > 90) & (b > 1.5 * r) & (b > 1.2 * g),
-            "yellow": (r > 140) & (g > 120) & (b < 0.5 * g),
-        }
-        if color not in masks:
-            raise RobotError(f"Colours are {', '.join(masks)}")
-        from scipy import ndimage
-        labels, count = ndimage.label(masks[color])
-        blobs = []
-        for index in range(1, count + 1):
-            rows, cols = np.nonzero(labels == index)
-            if rows.size >= min_pixels:
-                blobs.append({"uv": (float(cols.mean()), float(rows.mean())), "pixels": int(rows.size), "box": (int(cols.min()), int(rows.min()), int(cols.max()), int(rows.max()))})
-        return sorted(blobs, key=lambda blob: -blob["pixels"])
-
-    def find_objects(self, camera, color, z_range=None):
-        image, _ = self.capture(camera)
-        blobs = self.find_color(image, color)
-        if not blobs:
+    def find_color(self, camera, color, min_area=40, plane_z=None):
+        import cv2
+        image = self.capture(camera)
+        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+        mask = np.zeros(hsv.shape[:2], np.uint8)
+        for low, high in COLORS[color]:
+            mask |= cv2.inRange(hsv, np.array(low), np.array(high))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+        count, labels, stats, centers = cv2.connectedComponentsWithStats(mask)
+        found = [(int(stats[i, cv2.CC_STAT_AREA]), centers[i]) for i in range(1, count) if stats[i, cv2.CC_STAT_AREA] >= min_area]
+        found.sort(key=lambda item: -item[0])
+        if not found:
             return []
-        points = self.locate(camera, [blob["uv"] for blob in blobs])
-        found = []
-        for blob, xyz in zip(blobs, points):
-            if z_range is None or z_range[0] <= xyz[2] <= z_range[1]:
-                found.append({**blob, "xyz": xyz})
-        return found
-
-    def objects(self):
-        if os.environ.get("REBOT_HIDE_OBJECTS") == "1":
-            raise RobotError("Ground truth objects are hidden in this evaluation; find objects with robot.capture and robot.locate")
-        return self._get("/api/sim/objects")
-
-    def task(self, name, seed=0):
-        self.ensure_ready()
-        return self._post("/api/sim/task", {"name": name, "seed": int(seed)})
-
-    def task_status(self):
-        return self._get("/api/sim/task")
+        points = self.locate(camera, [c for _, c in found], plane_z)
+        return [{"pixel": [round(float(c[0])), round(float(c[1]))], "area": a, "xyz": p} for (a, c), p in zip(found, points)]
 
     def wait(self, seconds):
-        time.sleep(max(0.0, min(float(seconds), 60.0)))
+        time.sleep(float(seconds))
 
 
-def _plain(value):
-    if isinstance(value, np.ndarray):
-        return value.tolist()
-    if isinstance(value, (list, tuple)):
-        return [_plain(v) for v in value]
-    if isinstance(value, np.generic):
-        return value.item()
-    return value
-
-
-def _detail(response):
-    try:
-        detail = response.json().get("detail", response.text)
-    except ValueError:
-        detail = response.text
-    return f"{response.status_code}: {detail}"
-
-
-def run_policy(code, robot, timeout=None):
-    output = io.StringIO()
-    scope = {"robot": robot, "np": np, "math": math, "time": time, "RobotError": RobotError, "__name__": "__policy__"}
-    ok = True
+def run_code(code, timeout_s=120.0, url=None):
+    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as handle:
+        handle.write(textwrap.dedent(code))
+        path = handle.name
+    env = dict(os.environ, REBOT_URL=url or DEFAULT_URL, PYTHONUNBUFFERED="1")
     started = time.monotonic()
-    with contextlib.redirect_stdout(output):
+    try:
+        result = subprocess.run([sys.executable, "-m", "rebot_teleop.agent", "--run", path], capture_output=True, text=True, timeout=timeout_s, env=env, cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        output = (result.stdout + result.stderr)[-8000:]
+        ok = result.returncode == 0
+    except subprocess.TimeoutExpired as error:
+        output = ((error.stdout or b"").decode(errors="ignore") if isinstance(error.stdout, bytes) else (error.stdout or ""))[-6000:] + f"\nTimed out after {timeout_s:.0f} s; the arms were told to hold"
+        ok = False
+    finally:
+        os.unlink(path)
+    if not ok:
         try:
-            exec(compile(code, "<policy>", "exec"), scope)
-        except RobotError as error:
-            ok = False
-            print(f"RobotError: {error}")
-        except BaseException:
-            ok = False
-            print(traceback.format_exc(limit=4))
-            with contextlib.suppress(Exception):
-                robot.stop()
-    return ok, output.getvalue(), time.monotonic() - started
+            Robot(url).stop()
+        except RobotError:
+            pass
+    return {"ok": ok, "output": output.strip() or ("Done" if ok else "Failed"), "seconds": round(time.monotonic() - started, 1)}
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run a code as policy script against the reBot teleop server; the script gets a ready made robot object")
-    parser.add_argument("script", nargs="?", help="Python file to run, or - for stdin; leave out to print the robot API")
-    parser.add_argument("--url", default=None, help=f"Teleop server, default $REBOT_URL or {DEFAULT_URL}")
-    parser.add_argument("--code", default=None, help="Pairing code when the server is on another computer")
-    parser.add_argument("--speed", type=float, default=None, help="Joint speed in degrees per second")
-    args = parser.parse_args()
-    if not args.script:
-        print(GUIDE)
+    if len(sys.argv) == 3 and sys.argv[1] == "--run":
+        robot = Robot()
+        scope = {"robot": robot, "np": np, "math": math, "time": time, "RobotError": RobotError, "__name__": "__policy__"}
+        source = open(sys.argv[2]).read()
+        exec(compile(source, "policy.py", "exec"), scope)
         return
-    code = sys.stdin.read() if args.script == "-" else Path(args.script).read_text()
-    try:
-        robot = Robot(args.url, args.code, speed_deg_s=args.speed)
-    except RobotError as error:
-        sys.exit(str(error))
-    ok, output, took = run_policy(code, robot)
-    sys.stdout.write(output)
-    print(f"[policy {'finished' if ok else 'failed'} in {took:.1f} s]")
-    sys.exit(0 if ok else 1)
+    print(API)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 # reBot robot guide for coding agents
 
-Read this before moving anything. It describes the robot, its frames, what each joint does, where the arms can reach, how to see, and how to work safely. Everything here is true for the simulator and for the real robot unless a section says otherwise.
+Read this before moving anything. The `robot` API is printed by the `robot_api` MCP tool.
 
 ## The robot
 
@@ -26,7 +26,7 @@ All positions are metres in one world frame:
 | home | arms hanging straight down beside the post | (0.00, 0.20, 0.37) | (0.00, -0.20, 0.37) |
 | ready | forearms reaching forward over the table, grippers pointing down and open | (0.30, 0.25, 0.78) | (0.30, -0.25, 0.78) |
 
-`robot.home()` and `robot.ready()` go there. Home is where the real robot rests when powered off. The straight path from home to anything over the table hits the table, so the planner finds a detour automatically; you never need to plan that yourself.
+`robot.go("home")` and `robot.go("ready")` go there; poses saved on the dashboard work the same way. Moves are straight lines in joint space, so from home go to ready first before reaching over the table.
 
 Joint values (degrees): home left [-90, 170, 145, 30, 0, 0], right [90, 170, 145, 30, 0, 0]; ready left [-28.5, 107.4, 43.5, 74.3, 61.2, -9.1], right [28.5, 107.3, 43.3, 74.4, -61.1, 9.1]. The arms are mirror images: J1, J5 and J6 change sign between left and right, J2, J3 and J4 do not.
 
@@ -34,11 +34,11 @@ Joint values (degrees): home left [-90, 170, 145, 30, 0, 0], right [90, 170, 145
 
 | Joint | Motion from the hanging pose | Limits |
 |---|---|---|
-| J1 | swings the whole arm forward and up, like raising a hand in front of you (left arm: more negative is forward; right arm: more positive) | -155 to 155 |
-| J2 | swings the elbow out sideways, away from the post | -3 to 175 |
-| J3 | bends the elbow; from home it folds the forearm inward toward the post, which is why bending at home is refused | -3 to 175 |
-| J4 | wrist pitch | -85 to 85 |
-| J5 | wrist turn | -85 to 85 |
+| J1 | swings the whole arm forward and up, like raising a hand in front of you (left arm: more negative is forward; right arm: more positive) | -158 to 158 |
+| J2 | swings the elbow out sideways, away from the post | -3 to 178 |
+| J3 | bends the elbow; from home it folds the forearm inward toward the post, so bend it only once the arm is out from the post | -3 to 178 |
+| J4 | wrist pitch | -88 to 88 |
+| J5 | wrist turn | -88 to 88 |
 | J6 | spins the gripper about its own pointing axis | -179 to 179 |
 
 You rarely need joints directly. Prefer tip positions (`robot.move_tip`) and let inverse kinematics pick the joints.
@@ -53,60 +53,18 @@ You rarely need joints directly. Prefer tip positions (`robot.move_tip`) and let
 
 ## Where the arms can reach
 
-This matters more than anything else when planning.
+* Each arm works on its own side: with the hand pointing down the left arm reaches y from about 0.10 to 0.40 m and the right arm y from about -0.10 to -0.40 m, at x from about 0.15 to 0.40 m at table height. The side mounts stop either arm from crossing the centre line; that is the joint limits, not software.
+* Nothing is refused. A target out of reach moves as close as the arm can get and the result gives `reach_error_m` and a note. Use `robot.can_reach` to check first.
+* There is no collision checking between the arms, the post or the table. Plan moves that stay clear, go up before going across, and move in a few larger steps.
 
-* Each arm only works on its own side. With the hand pointing down, the left arm reaches y from about 0.10 to 0.40 m and the right arm y from about -0.10 to -0.40 m, at x from about 0.15 to 0.40 m, at table height.
-* **There is no shared workspace.** Nothing between y = -0.10 and 0.10 can be reached from above, and the two grippers cannot meet in the air in front of the robot. Do not plan handovers. Work with the arm on the object's side.
-* Higher points need the hand closer to the post: at 0.85 m height only y beyond about 0.30 m is reachable top down.
-* `robot.can_reach(arm, xyz, rotation)` checks a point without moving.
-* Joint J4 often sits near its 85 degree limit over the table. If a top down pose is out of reach by a little, the planner tilts the hand slightly and says so in the move result.
+## Cameras
 
-## The table (simulator tasks)
+* `torso`: Angstrong HP60C on the chest with colour and aligned depth; `robot.locate("torso", pixels)` uses the depth.
+* `left` and `right`: wrist cameras; `locate` intersects the ray with the table plane (or `plane_z`).
+* `robot.find_color(camera, color)` finds red, orange, yellow, green or blue objects and returns their world positions.
 
-Top at z = 0.68 m, x from 0.12 to 0.55 m, y from -0.40 to 0.40 m. Objects in tasks spawn at x 0.24 to 0.36 and |y| 0.16 to 0.32. Blocks are 3 cm cubes. Bins are 11 cm square inside, 4.5 cm tall, open at the top.
+## Habits that work
 
-On the real robot, describe the actual table to the server with `REBOT_TELEOP_TABLE='{"top": 0.68, "x": [0.12, 0.55], "y": [-0.4, 0.4]}'` so the planner avoids it.
-
-## Safety the server enforces
-
-Every move is checked before anything moves: joint limits, the floor, keep out boxes around the post, the head and the table (the arm links keep 3.5 cm away; only the fingertips may come within a few millimetres of the table), and a smooth path at a capped speed. A refused move raises `RobotError` and explains why; nothing moves in that case. The planner does not check one arm against the other, so keep each arm on its own side.
-
-## Seeing
-
-* `robot.capture("left" | "right" | "overview")` returns an RGB image and its camera info: `fx, fy, cx, cy, width, height` and `world_from_camera`, a 4x4 pose with OpenCV axes (x right, y down, z forward).
-* `robot.locate(camera, [(u, v)])` turns pixels of the last capture into world points. In the simulator it uses the depth image. On the real robot the cameras have no depth, so it intersects the pixel ray with a horizontal plane, by default the table top; pass `plane_z` for other surfaces.
-* `robot.find_objects(camera, "red", z_range=(0.67, 0.80))` does capture, colour blobs and 3D location in one call. Parts of the robot itself (the collar under the head, the head, the arms) can match a colour, so always filter by height or position.
-* The overview camera exists only in the simulator. It is the easiest way to find objects there. On the real robot use the wrist cameras: move to the ready pose, capture, locate, then refine by capturing again from above the object.
-* Each wrist camera sits about 12 cm above the tip and looks down and inward toward the middle. Hold still while capturing.
-* The real robot can also have a fixed `torso` camera low on the post that sees both arms and the table at once. Use it to find objects and to check where each gripper is relative to them, then use the wrist cameras for the close approach. `locate` works on it only when its position is set with `--camera-pose torso=X,Y,Z,LOOK_X,LOOK_Y,LOOK_Z`; otherwise locate through a wrist camera.
-* The real wrist cameras are Innomaker USB (UVC) cameras. Their field of view is set with `REBOT_TELEOP_CAMERA_FOV` (horizontal degrees, default 80). Measure it once for accurate locations.
-
-## Working on a task (develop, freeze, evaluate)
-
-This follows the RoboDojo code as policies protocol.
-
-1. **Develop.** `robot.task(name, seed)` resets a task layout. Use development seeds 0 to 99. Look, write a policy in `policies/<task>.py`, run it with `python -m rebot_teleop.agent policies/<task>.py` or the `run_policy` tool, check `robot.task_status()`, improve. About ten attempts per task is the norm.
-2. **Freeze.** Stop editing the policy file.
-3. **Evaluate.** `python -m rebot_teleop.dojo eval <task>` runs the frozen file on evaluation seeds 100 to 119 with no agent involved and ground truth hidden. Results go to `results/`. `python -m rebot_teleop.dojo summary` prints the table.
-
-Policies must find objects with the cameras. `robot.objects()` gives ground truth positions and is fine while developing, but it raises an error during evaluation.
-
-Tasks: `lift_block`, `block_in_bin`, `stack`, `sort_colors` (both arms), `lift_both` (both arms at once). `python -m rebot_teleop.dojo list` prints their instructions.
-
-## Rules for agents
-
-1. Work in the simulator first. Check `robot.state()["sim"]`.
-2. The real arms move only when the person at the robot has started the MCP server with `REBOT_ALLOW_REAL=1`, the arms are powered from the dashboard, and the person has agreed to that specific motion. Describe what will move before running anything on hardware. Agents can never power arms on.
-3. Keep moves slow near objects (`speed_deg_s=15`) and use `robot.stop()` if anything looks wrong.
-4. After each motion, look before deciding the next one. Do not assume a grasp worked.
-5. Policies are plain Python with `robot`, `np`, `math` and `time` available. Print what you observe; the output is how you learn what happened.
-
-## Common refusals
-
-| Message | Meaning |
-|---|---|
-| The arm would hit the post / head / table | the goal or the path passes too close; choose another point or approach from above |
-| hand cannot reach [x, y, z] | outside the workspace for that orientation; check the reach section, try the other arm or tilt the hand |
-| Joint N limit reached | the pose needs a joint past its limit |
-| No collision free path found | no detour found in 1.5 s; go to `robot.ready()` first, then try again |
-| Power the arm on first | in the simulator the client powers on by itself; on hardware a person must press Power on |
+* Start with `look_all`, write one policy for a whole step (approach, grasp, lift), run it, then `look_all` again.
+* Grasp at the object centre height with the gripper pointing down (`rotation="down"` or a yaw in degrees). The gripper opens to 5 cm.
+* If a policy fails the arms hold where they are; read the error, adjust, run again.
