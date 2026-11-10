@@ -27,7 +27,7 @@ On the Jetson it runs as the `rebot` systemd service. Run `scripts/install_jetso
 |---|---|---|
 | Left and right arm, RobStride RS06 (J1 to J3) and RS00 (J4 to J6, gripper) | PEAK USB CAN at 1 Mbit/s, tied to USB ports in `~/.rebot-teleop/can_ports.json` | `rebot_teleop/arm.py` (motorbridge, MIT mode at 200 Hz) |
 | Wrist cameras, Innomaker U20CAM | USB, `/dev/v4l/by-id/...` | `rebot_teleop/cameras.py` (OpenCV V4L2, MJPEG passthrough) |
-| Torso camera, Angstrong HP60C (RGB and depth) | USB | `rebot_teleop/hp60c.py` (vendor SDK through ctypes, in `vendor/angstrong`) |
+| Head camera, Angstrong HP60C (RGB and depth) | USB | `rebot_teleop/hp60c.py` (vendor SDK through ctypes, in `vendor/angstrong`) |
 | Table lift, Pico with BTS7960 | USB serial | `rebot_teleop/lift.py` |
 
 Joint limits are Seeed's URDF limits less 2 degrees (`config.py`). Gravity compensation comes from the URDF model with the side mounts. On power on each arm holds exactly where it is. An arm that is unplugged or unpowered is shown offline and everything else keeps working; it is picked up again within two seconds of being plugged back in.
@@ -43,7 +43,7 @@ rebot_teleop/
   robot.py       both arms, hot plug, poses
   teleop.py      Quest and phone teleop (telegrip style relative control at 125 Hz)
   sequencer.py   points, recorded motion, playback
-  cameras.py     USB cameras;  hp60c.py  torso depth camera
+  cameras.py     USB cameras;  hp60c.py  head depth camera
   lift.py        table lift
   twin.py        meshes for the dashboard twin
   server.py      FastAPI: pages, REST, WebSockets, MJPEG

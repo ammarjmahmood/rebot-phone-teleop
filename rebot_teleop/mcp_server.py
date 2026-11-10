@@ -4,7 +4,7 @@ import logging
 from mcp.server.mcpserver import Image, MCPServer
 from rebot_teleop.agent import API, Robot, RobotError, run_code
 
-INSTRUCTIONS = """You drive a real two armed reBot (two Seeed B601 RS arms on the sides of a post, a torso depth camera, a camera on each wrist, a motorised table lift).
+INSTRUCTIONS = """You drive a real two armed reBot (two Seeed B601 RS arms on the sides of a post, a head depth camera, a camera on each wrist, a motorised table lift).
 Work like Code as Policies: call look_all to see every camera and both arms, write a short Python policy against the robot API and run it with run_policy, then look_all again to check.
 Batch several moves into one policy. Moves are smooth and never refused: an out of reach target goes as close as it can and the result says how far off it was.
 power_on holds the arm still where it is. The arms work on their own sides (left arm y > 0, right arm y < 0).
@@ -58,18 +58,18 @@ def power_off(arm: str = "") -> str:
     return guarded(robot().power_off, arm or None)
 
 
-@server.tool(description="Look through one camera: torso (fixed depth camera that sees both arms and the table), left or right (wrist cameras)")
-def look(camera: str = "torso") -> Image | str:
+@server.tool(description="Look through one camera: head (fixed depth camera that sees both arms and the table), left or right (wrist cameras)")
+def look(camera: str = "head") -> Image | str:
     try:
         return picture(camera)
     except RobotError as error:
         return f"No picture: {error}"
 
 
-@server.tool(description="Every camera picture (torso, left wrist, right wrist) followed by the state of both arms, in one call")
+@server.tool(description="Every camera picture (head, left wrist, right wrist) followed by the state of both arms, in one call")
 def look_all() -> list:
     parts = []
-    for camera in ("torso", "left", "right"):
+    for camera in ("head", "left", "right"):
         parts.append(f"{camera} camera:")
         try:
             parts.append(picture(camera))
@@ -101,7 +101,7 @@ def set_gripper(arm: str, width_m: float) -> str:
     return guarded(robot().grip, arm, width_m)
 
 
-@server.tool(description="World xyz for pixels of a camera picture. The torso camera uses its depth; wrist cameras intersect a horizontal plane at plane_z (default the table top)")
+@server.tool(description="World xyz for pixels of a camera picture. The head camera uses its depth; wrist cameras intersect a horizontal plane at plane_z (default the table top)")
 def locate(camera: str, pixels: list[list[float]], plane_z: float | None = None) -> str:
     return guarded(robot().locate, camera, pixels, plane_z)
 

@@ -139,7 +139,7 @@ function liftWidget(id) {
   if (document.activeElement !== speed && l.speed) speed.value = l.speed;
 }
 
-const CAMERA_ORDER = ['torso', 'left', 'right'];
+const CAMERA_ORDER = ['head', 'left', 'right'];
 function cameraList() {
   const names = Object.keys(state.cameras);
   return CAMERA_ORDER.filter(n => names.includes(n)).concat(names.filter(n => !CAMERA_ORDER.includes(n)));

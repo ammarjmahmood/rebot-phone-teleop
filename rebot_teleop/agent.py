@@ -34,9 +34,9 @@ Sequences and the table
   robot.play(name, wait=True)        plays a sequence saved in the Sequencer tab
   robot.lift(action, seconds)        action up or down, then stops
 
-Cameras: "left", "right" (wrists), "torso" (fixed HP60C with depth)
+Cameras: "left", "right" (wrists), "head" (fixed HP60C with depth)
   robot.capture(camera) -> BGR numpy image
-  robot.locate(camera, [[u, v], ...], plane_z=None) -> list of world xyz (torso uses depth)
+  robot.locate(camera, [[u, v], ...], plane_z=None) -> list of world xyz (head uses depth)
   robot.find_color(camera, "red" | "green" | "blue" | "yellow" | "orange") -> list of {pixel, xyz, area}
 
 World frame: metres, origin at the foot of the post, x forward, y to the robot's left, z up.

@@ -313,7 +313,7 @@ def create_app(sim=False, arms=("left", "right"), start_hardware=True):
             position, rotation = unit.kin.camera_pose(unit.arm.q)
             pose = optical_pose(position, rotation)
         else:
-            pose = look_at_pose(cameras.torso_pose["xyz"], cameras.torso_pose["look_at"])
+            pose = look_at_pose(cameras.head_pose["xyz"], cameras.head_pose["look_at"])
         return image, depth, {"width": width, "height": height, **intrinsics}, pose
 
     @app.post("/api/camera/{name}/locate")

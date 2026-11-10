@@ -59,7 +59,7 @@ You rarely need joints directly. Prefer tip positions (`robot.move_tip`) and let
 
 ## Cameras
 
-* `torso`: Angstrong HP60C on the chest with colour and aligned depth; `robot.locate("torso", pixels)` uses the depth.
+* `head`: Angstrong HP60C on the head with colour and aligned depth; `robot.locate("head", pixels)` uses the depth.
 * `left` and `right`: wrist cameras; `locate` intersects the ray with the table plane (or `plane_z`).
 * `robot.find_color(camera, color)` finds red, orange, yellow, green or blue objects and returns their world positions.
 

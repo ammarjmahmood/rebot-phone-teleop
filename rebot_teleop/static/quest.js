@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-const CAMERAS = ['torso', 'left', 'right'];
+const CAMERAS = ['head', 'left', 'right'];
 let ws = null, session = null, refSpace = null, gl = null, panel = null;
 let cameraIndex = 0, panelOn = true, lastButtons = {}, gripWas = {}, lastStatus = {}, seq = 0, rtt = null;
 

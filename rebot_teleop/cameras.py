@@ -116,7 +116,7 @@ class Cameras:
         devices.update(settings.get("devices", {}))
         self.rotate = settings.get("rotate", {})
         self.fov = settings.get("fov_deg", {"left": 70.0, "right": 70.0})
-        self.torso_pose = settings.get("torso_pose", C.TORSO_POSE)
+        self.head_pose = settings.get("head_pose", C.HEAD_POSE)
         self.cameras = {}
         if sim:
             return

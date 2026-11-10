@@ -42,7 +42,7 @@ input[type=range]{flex:1}
 <script>
 const $ = id => document.getElementById(id);
 let ws, arm = 'left', xy = [0, 0], z = 0, yaw = 0, grip = 1, camIndex = 0;
-const cams = ['torso', 'left', 'right'];
+const cams = ['head', 'left', 'right'];
 function connect() {
   ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws/teleop');
   ws.onopen = () => { ws.send(JSON.stringify({ type: 'start', source: 'phone' })); $('status').textContent = 'Connected. Drag a pad to move the ' + arm + ' arm.'; };

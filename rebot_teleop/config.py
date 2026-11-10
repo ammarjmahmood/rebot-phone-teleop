@@ -58,9 +58,9 @@ DEFAULT_CAN = {"left": "can1", "right": "can2"}
 DEFAULT_CAMERAS = {
     "left": "/dev/v4l/by-id/usb-Innomaker_Innomaker-U20CAM-720P_SN0001-video-index0",
     "right": "/dev/v4l/by-id/usb-Innomaker_Innomaker-U20CAM-1080p-S1_SN0001-video-index0",
-    "torso": "hp60c",
+    "head": "hp60c",
 }
-TORSO_POSE = {"xyz": [0.06, 0.0, 1.42], "look_at": [0.35, 0.0, 0.70]}
+HEAD_POSE = {"xyz": [0.06, 0.0, 1.42], "look_at": [0.35, 0.0, 0.70]}
 LIFT_PORT = "/dev/serial/by-id/usb-MicroPython_Board_in_FS_mode_df6470a31b703c2f-if00"
 ANGSTROM_SDK = ROOT / "vendor" / "angstrong"
 
