@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "rebot": {
-      "command": "bash",
-      "args": ["scripts/rebot_mcp.sh"]
-    }
-  }
-}
