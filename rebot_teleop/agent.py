@@ -27,6 +27,7 @@ robot.move_joints(arm, [j1..j6])         joint angles in degrees
 robot.move(left={...}, right={...})      both arms together; spec keys joints_deg, tip_xyz, tip_delta, tip_rotation, gripper_m
 robot.can_reach(arm, xyz, rotation=None) True or False without moving
 robot.grip(arm, width_m)                 open or close
+robot.gripper_is(arm, "open")            tell the server the gripper is open (or "closed") now, when its reading is a whole turn off
 robot.top_down(arm, yaw_deg=0)           hand pointing straight down; fingers close along world x rotated by yaw
 robot.pick(arm, xyz, yaw_deg=0)          open, come down from above to xyz (object centre), close, lift 10 cm
 robot.place(arm, xyz, yaw_deg=0)         carry above xyz, lower until the held object's centre is at xyz, open, rise
@@ -168,6 +169,9 @@ class Robot:
 
     def grip(self, arm, width_m):
         return self.move(**{arm: {"gripper_m": width_m}})
+
+    def gripper_is(self, arm, which):
+        return self._post("/api/gripper-state", {"arm": self._arm(arm), "which": which})
 
     def say(self, text):
         if text.strip().lower() not in {"stop", "halt", "freeze"}:

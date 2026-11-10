@@ -641,6 +641,12 @@ def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, heb
         body = await body_of(request)
         return pick(request, body.get("arm")).save_gripper(body.get("which"))
 
+    @app.post("/api/gripper-state")
+    async def gripper_state(request: Request):
+        device(request)
+        body = await body_of(request)
+        return pick(request, body.get("arm")).gripper_is(body.get("which"))
+
     @app.post("/api/remote")
     async def remote(request: Request):
         device(request)

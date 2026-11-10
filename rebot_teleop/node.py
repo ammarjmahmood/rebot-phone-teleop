@@ -322,6 +322,11 @@ class TeleopNode:
         self.settings.set("gripper_range", saved)
         return saved
 
+    def gripper_is(self, which):
+        if not hasattr(self.arm, "set_gripper_state"):
+            raise ValueError("This arm reads its gripper without whole turn errors")
+        return {"gripper_deg": round(math.degrees(self.arm.set_gripper_state(which)), 1)}
+
     def status(self):
         arm = self.arm.status()
         return {

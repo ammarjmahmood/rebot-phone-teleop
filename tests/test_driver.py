@@ -365,3 +365,46 @@ def test_a_motor_that_lost_its_turn_count_is_reread_before_powering_on():
         assert math.degrees(arm.command[1]) == pytest.approx(177.9, abs=0.01)
     finally:
         arm.close()
+
+
+def test_an_open_gripper_resting_past_the_encoder_wrap_reads_open_and_closes_the_right_way():
+    arm, buses = wrapped_arm([0.0, 90.0, 90.0, 0.0, 0.0, 0.0, -90.2])
+    arm.set_gripper_range(0.0, math.radians(270.0))
+    arm.connect()
+    assert math.degrees(arm.offset[6]) == pytest.approx(360.0)
+    assert np.count_nonzero(arm.offset) == 1
+    arm.confirm_zero(True)
+    arm.enable()
+    try:
+        motor = buses[0].motors[7]
+        assert arm.width == pytest.approx(0.05, abs=1e-4)
+        assert math.degrees(motor.commands[-1]) == pytest.approx(-90.2, abs=0.01)
+        arm.enabled = True
+        arm.grip(0)
+        assert wait_for(lambda: abs(math.degrees(motor.pos) + 360.0) < 0.5, timeout=4.0)
+        assert arm.width == pytest.approx(0.0, abs=1e-3)
+    finally:
+        arm.close()
+
+
+def test_saying_the_gripper_is_open_shifts_its_reading_by_whole_turns_without_moving_it():
+    arm, buses = wrapped_arm([0.0, 90.0, 90.0, 0.0, 0.0, 0.0, -1.7])
+    arm.set_gripper_range(0.0, math.radians(270.0))
+    arm.connect()
+    assert not np.any(arm.offset)
+    arm.confirm_zero(True)
+    arm.enable()
+    try:
+        motor = buses[0].motors[7]
+        time.sleep(0.05)
+        sent = len(motor.commands)
+        assert math.degrees(arm.set_gripper_state("open")) == pytest.approx(358.3, abs=0.01)
+        time.sleep(0.05)
+        assert len(motor.commands) > sent
+        assert math.degrees(motor.commands[-1]) == pytest.approx(-1.7, abs=0.01)
+        assert math.degrees(motor.pos) == pytest.approx(-1.7, abs=0.01)
+        assert math.degrees(arm.set_gripper_state("closed")) == pytest.approx(-1.7, abs=0.01)
+        with pytest.raises(ValueError):
+            arm.set_gripper_state("ajar")
+    finally:
+        arm.close()

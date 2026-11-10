@@ -11,7 +11,7 @@ GAINS = ((50.0, 2.0), (100.0, 4.0), (100.0, 4.0), (40.0, 2.0), (40.0, 1.5), (40.
 LIMITS_DEG = ((-155.0, 155.0), (-3.0, 175.0), (-3.0, 175.0), (-85.0, 85.0), (-85.0, 85.0), (-179.0, 179.0))
 ZERO_TOLERANCE = math.radians(6.0)
 RECOVERABLE_EXCESS = math.radians(min(45.0, max(0.0, float(os.environ.get("REBOT_TELEOP_LIMIT_SLACK_DEG", "15")))))
-TRACKING_LIMIT = math.radians(15.0)
+TRACKING_LIMIT = math.radians(max(0.0, float(os.environ.get("REBOT_TELEOP_TRACKING_LIMIT_DEG", "15"))))
 TRACKING_GRACE_S = 0.4
 FEEDBACK_TIMEOUT_S = 0.5
 TEMPERATURE_WARN_C = 75.0
@@ -27,6 +27,7 @@ MAX_TELEOP_ACCEL_DEG_S2 = 480.0
 GRIPPER_LEAD_RAD = 3.5 / 12.0
 GRIPPER_HOLD_LEAD_RAD = 1.0 / 12.0
 GRIPPER_JOG_DEG = (-180.0, 360.0)
+GRIPPER_WRAP_SLACK = math.radians(30.0)
 GRAVITY_LIMIT_NM = (12.0, 12.0, 12.0, 4.0, 4.0, 4.0)
 
 
@@ -132,6 +133,13 @@ class RSArm:
             for turn in (2 * math.pi, -2 * math.pi):
                 if low <= raw[index] + turn <= high:
                     offsets[index] = turn
+                    break
+        low = min(self.gripper_closed, self.gripper_open) - GRIPPER_WRAP_SLACK
+        high = max(self.gripper_closed, self.gripper_open) + GRIPPER_WRAP_SLACK
+        if not low <= raw[6] <= high:
+            for turn in (2 * math.pi, -2 * math.pi):
+                if low <= raw[6] + turn <= high:
+                    offsets[6] = turn
                     break
         return offsets
 
@@ -266,7 +274,7 @@ class RSArm:
             self._fail(f"Joint {hot[0]} is above {TEMPERATURE_LIMIT_C:.0f} C; let it cool below {TEMPERATURE_RESUME_C:.0f} C, then Reset")
             return
         error = np.abs(self.measured[:6] - self.command[:6])
-        if np.max(error) > TRACKING_LIMIT:
+        if TRACKING_LIMIT and np.max(error) > TRACKING_LIMIT:
             if self.track_since is None:
                 self.track_since = now
             elif now - self.track_since > TRACKING_GRACE_S:
@@ -304,6 +312,21 @@ class RSArm:
         with self.lock:
             self.gripper_closed = float(closed)
             self.gripper_open = float(opened)
+
+    def set_gripper_state(self, which):
+        if which not in {"open", "closed"}:
+            raise ValueError("Say whether the gripper is open or closed")
+        if not self.connected:
+            raise ValueError("The RS arm is not connected")
+        goal = self.gripper_open if which == "open" else self.gripper_closed
+        with self.lock:
+            raw = self.measured[6] - self.offset[6]
+            shift = round((goal - raw) / (2 * math.pi)) * 2 * math.pi - self.offset[6]
+            self.offset[6] += shift
+            self.measured[6] += shift
+            self.command[6] += shift
+            self.target[6] += shift
+            return float(self.measured[6])
 
     def check_limits(self, q):
         q = np.asarray(q, dtype=float)
