@@ -23,7 +23,7 @@ fi
 sudo modprobe peak_usb
 RULE=/etc/udev/rules.d/80-rebot-teleop-can.rules
 if [ ! -f "$RULE" ]; then
-  echo 'ACTION=="add", SUBSYSTEM=="net", DRIVERS=="peak_usb", RUN+="/usr/sbin/ip link set $name type can bitrate 1000000 restart-ms 100", RUN+="/usr/sbin/ip link set $name up"' | sudo tee "$RULE" >/dev/null
+  echo 'ACTION=="add", SUBSYSTEM=="net", DRIVERS=="peak_usb", RUN+="/usr/sbin/ip link set $name type can bitrate 1000000 restart-ms 100", RUN+="/usr/sbin/ip link set $name txqueuelen 1000", RUN+="/usr/sbin/ip link set $name up"' | sudo tee "$RULE" >/dev/null
   sudo udevadm control --reload
 fi
 IFACE=""
@@ -39,5 +39,6 @@ if [ -z "$IFACE" ]; then
 fi
 sudo ip link set "$IFACE" down
 sudo ip link set "$IFACE" type can bitrate 1000000 restart-ms 100
+sudo ip link set "$IFACE" txqueuelen 1000
 sudo ip link set "$IFACE" up
 echo "CAN ready on $IFACE at 1 Mbit/s"

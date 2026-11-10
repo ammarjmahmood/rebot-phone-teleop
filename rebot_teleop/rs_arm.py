@@ -145,8 +145,15 @@ class RSArm:
             self.feedback_at = time.monotonic()
             return self.measured.copy()
 
+    def rewrap(self):
+        if self.torque:
+            return self.read_positions()
+        self.offset = np.zeros(7)
+        self.offset = self.wrap_offsets(self.read_positions())
+        return self.read_positions()
+
     def confirm_zero(self, anywhere=False):
-        positions = self.read_positions()
+        positions = self.rewrap()
         if anywhere:
             outside = [i + 1 for i, value in enumerate(positions[:6]) if value < self.lower[i] - RECOVERABLE_EXCESS or value > self.upper[i] + RECOVERABLE_EXCESS]
             if outside:
@@ -168,7 +175,7 @@ class RSArm:
         with self.lock:
             for motor in self.motors:
                 motor.ensure_mode(Mode.MIT, 1000)
-            positions = self.read_positions()
+            positions = self.rewrap()
             self.command = positions.copy()
             self.target = positions.copy()
             self.rate = np.zeros(7)

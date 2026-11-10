@@ -347,3 +347,21 @@ def test_joints_inside_their_range_get_no_offset_and_true_outliers_are_still_ref
     assert not np.any(arm.offset)
     with pytest.raises(ValueError, match="outside their range"):
         arm.confirm_zero(True)
+
+
+def test_a_motor_that_lost_its_turn_count_is_reread_before_powering_on():
+    raw = [83.9, -182.1, 161.5, 6.3, -19.1, -178.5, 30.0]
+    arm, buses = wrapped_arm(raw)
+    arm.connect()
+    assert math.degrees(arm.offset[1]) == pytest.approx(360.0)
+    buses[0].motors[2].pos = math.radians(177.9)
+    arm.read_positions()
+    assert math.degrees(arm.q[1]) == pytest.approx(537.9, abs=0.01)
+    arm.confirm_zero(True)
+    arm.enable()
+    try:
+        assert np.count_nonzero(arm.offset) == 0
+        assert math.degrees(arm.q[1]) == pytest.approx(177.9, abs=0.01)
+        assert math.degrees(arm.command[1]) == pytest.approx(177.9, abs=0.01)
+    finally:
+        arm.close()
