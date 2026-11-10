@@ -25,6 +25,17 @@ Not done yet:
 * The real wrist cameras (Innomaker USB) have not been opened; their `/dev/video` numbers and field of view are unknown.
 * The real robot has no overview camera, so camera only policies on hardware must use the wrist cameras.
 
+## Jetson state as of 2026-11-09 22:45
+
+* The repo is on `sim/bimanual-mount` (commit `335047b` or later). Uncommitted work found on `main` (mount specs such as `--mount left=side_left@1.15`, `--gravity-scale`, pairing and motion windows, a guard in `app.js`, a Clear fault button) was saved to the local branch `jetson/mount-wip` (`241e93b`) and to `~/jetson-mount-wip-20261109.patch`. The pairing and motion window options were brought into this branch; the rest is waiting for a decision.
+* `rebot-teleop.service` (systemd, enabled at boot, `Restart=always`) runs `python -m rebot_teleop --lan --port 8081 --https-port 8443 --pairing-ttl 86400 --motion-window 2700 --arm left=can1 --arm right=can2` from this folder. It was still running the old code when this was written; `sudo systemctl restart rebot-teleop` loads the new code. Both arms were not answering on can1 and can2 at the time (no power or no CAN link).
+* The service does not pass `--mount`, so this branch's default side mounts apply, which is what the post assembly needs.
+* Agent packages (`.[agent,camera]`) are installed and import cleanly; 29 tests that do not need PyBullet pass on the Jetson.
+* Seeed's arm meshes were copied to `~/rebot-phone-teleop/meshes` (ignored by git).
+* PyBullet 3.2.7 was compiling from source; check with `.venv/bin/python -c "import pybullet"` and rerun `~/.local/bin/uv pip install --python .venv/bin/python pybullet==3.2.7` if it is missing.
+* Claude Code is not installed yet: `curl -fsSL https://claude.ai/install.sh | bash`, then `claude login`.
+* No `/dev/video` devices were present, so the wrist cameras were not plugged in.
+
 ## Where to run what
 
 * **Simulator: on the PC.** PyBullet renders camera pictures on the PC's GPU (EGL) in about 5 ms. On the Jetson PyBullet has no prebuilt wheel and would render on the CPU at about 250 ms a frame, which stalls the physics.
