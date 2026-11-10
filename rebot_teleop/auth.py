@@ -10,6 +10,17 @@ from dotenv import dotenv_values
 from rebot_teleop.models import Principal
 
 
+DEFAULT_PAIRING_TTL = 300
+
+
+def pairing_ttl():
+    try:
+        value = int(os.environ.get("REBOT_TELEOP_PAIRING_TTL", DEFAULT_PAIRING_TTL))
+    except ValueError:
+        return DEFAULT_PAIRING_TTL
+    return value if 30 <= value <= 86400 else DEFAULT_PAIRING_TTL
+
+
 class Auth:
     def __init__(self, path: Path):
         self.path = path
@@ -72,6 +83,6 @@ class Auth:
         if role not in {"viewer", "operator"}:
             raise ValueError("Choose viewer or operator")
         code = str(secrets.randbelow(90000000) + 10000000)
-        self.save("REBOT_TELEOP_PAIRING", json.dumps({"code": code, "role": role, "expires": time.time() + 300}))
+        self.save("REBOT_TELEOP_PAIRING", json.dumps({"code": code, "role": role, "expires": time.time() + pairing_ttl()}))
         self.attempts.clear()
         return code

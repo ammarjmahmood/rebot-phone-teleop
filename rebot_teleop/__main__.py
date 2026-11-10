@@ -63,6 +63,8 @@ def main():
     parser.add_argument("--lan", action="store_true", help="Listen on the network so phones and headsets can connect")
     parser.add_argument("--cloudflare", action="store_true", help="Also publish an https address through a free Cloudflare quick tunnel")
     parser.add_argument("--allow-host", action="append", default=[], help="Extra hostname the server may be reached by; wildcards like *.example.com work")
+    parser.add_argument("--pairing-ttl", type=int, default=300, metavar="SECONDS", help="How long a pairing code stays valid, 30 to 86400 seconds; codes are single use and limited to five attempts a minute")
+    parser.add_argument("--motion-window", type=int, default=900, metavar="SECONDS", help="How long Allow phone and headset motion lasts once ticked, 60 to 14400 seconds")
     parser.add_argument("--data", default=str(Path.home() / ".rebot-teleop"), help="Folder for settings, secrets and the local certificate")
     args = parser.parse_args()
     if args.list_can:
@@ -101,6 +103,12 @@ def main():
     data = Path(args.data)
     os.environ["REBOT_TELEOP_CAN"] = "sim" if args.sim else detect_can() if args.can == "auto" else args.can
     print("Using CAN interface", os.environ["REBOT_TELEOP_CAN"])
+    if not 30 <= args.pairing_ttl <= 86400:
+        parser.error("--pairing-ttl must be between 30 and 86400 seconds")
+    if not 60 <= args.motion_window <= 14400:
+        parser.error("--motion-window must be between 60 and 14400 seconds")
+    os.environ["REBOT_TELEOP_PAIRING_TTL"] = str(args.pairing_ttl)
+    os.environ["REBOT_TELEOP_MOTION_WINDOW"] = str(args.motion_window)
     os.environ["REBOT_TELEOP_PORT"] = str(args.port)
     os.environ["REBOT_TELEOP_HTTPS_PORT"] = str(args.https_port)
     if args.cloudflare:

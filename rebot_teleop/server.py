@@ -24,7 +24,7 @@ from rebot_teleop import policy
 from rebot_teleop import tasks
 from rebot_teleop.camera import SimCamera, SimView, UsbCamera, locate, optical_pose, sim_capture, usb_capture
 from fastapi.staticfiles import StaticFiles
-from rebot_teleop.auth import Auth
+from rebot_teleop.auth import Auth, pairing_ttl
 from rebot_teleop.controller import TeleopController
 from rebot_teleop.models import Principal
 from rebot_teleop.node import TeleopNode
@@ -130,6 +130,17 @@ class GistBookmark:
             self.status = f"https://gist.github.com/{self.gist_id}"
         except Exception as error:
             self.status = f"gist update failed: {error}"
+
+
+DEFAULT_MOTION_WINDOW = 900
+
+
+def motion_window():
+    try:
+        value = int(os.environ.get("REBOT_TELEOP_MOTION_WINDOW", DEFAULT_MOTION_WINDOW))
+    except ValueError:
+        return DEFAULT_MOTION_WINDOW
+    return value if 60 <= value <= 14400 else DEFAULT_MOTION_WINDOW
 
 
 def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, hebi_source=None):
@@ -606,7 +617,7 @@ def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, heb
         device(request)
         enabled = bool((await body_of(request)).get("enabled"))
         for current in nodes(request).values():
-            current.remote_until = time.monotonic() + 900 if enabled else 0
+            current.remote_until = time.monotonic() + motion_window() if enabled else 0
             if not enabled:
                 for controller in current.controllers.values():
                     await controller.stop("Phone motion revoked", keep_source=True)
@@ -623,7 +634,7 @@ def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, heb
         for name, url, quest in routes:
             link = app_link(url, code)
             addresses.append({"interface": name, "label": route_label(name), "url": url, "quest": quest, "app_link": link, "qr": segno.make(link, error="m").svg_data_uri(scale=5, border=2)})
-        return {"code": code, "expires_in": 300, "addresses": addresses, "lan": lan, "cloudflare": tunnel.status if tunnel else None, "gist": gist.status if gist else None}
+        return {"code": code, "expires_in": pairing_ttl(), "addresses": addresses, "lan": lan, "cloudflare": tunnel.status if tunnel else None, "gist": gist.status if gist else None}
 
     @app.post("/api/hebi/{action}")
     async def hebi(action: str, request: Request):
