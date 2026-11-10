@@ -33,7 +33,7 @@ StandardError=append:$HOME_DIR/.rebot-teleop/server.log
 WantedBy=multi-user.target
 EOF
 mkdir -p "$HOME_DIR/.rebot-teleop" && chown "$USER_NAME:$USER_NAME" "$HOME_DIR/.rebot-teleop"
-if systemctl list-unit-files | grep -q '^rebot-teleop.service'; then
+if [ -e /etc/systemd/system/rebot-teleop.service ] || systemctl cat rebot-teleop.service >/dev/null 2>&1; then
   systemctl disable --now rebot-teleop.service || true
   rm -f /etc/systemd/system/rebot-teleop.service
   rm -rf /etc/systemd/system/rebot-teleop.service.d
@@ -73,7 +73,7 @@ EOF
 fi
 
 if [ "${KEEP_ROS:-0}" != "1" ]; then
-  if dpkg -l | grep -q '^ii  ros-'; then
+  if dpkg-query -W -f '${Status} ${Package}\n' 'ros-*' 2>/dev/null | grep ' installed ros-' >/dev/null; then
     echo "Removing ROS 2 packages"
     apt-get purge -y 'ros-*' || true
     apt-get autoremove -y || true
