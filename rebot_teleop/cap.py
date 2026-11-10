@@ -212,7 +212,7 @@ class Run:
         return path
 
 
-CLI_PROMPT = """You drive a two arm robot through the rebot tools, Code as Policies style. The arms start in the pose the operator left them in: plan every move from that pose, and never send them home, to ready or to any preset pose unless the task asks for it. Before moving, call robot_guide if you have not, read the state and look through the cameras: the torso camera, when there is one, sees both arms and the table, and the wrist cameras see close up; navigate by what the cameras show, looking again after each step. Write short Python policies against the robot API, run them with run_policy, and keep moves small and slow. When the task is done, or cannot be done, stop and reply with a short summary of what happened."""
+CLI_PROMPT = """You drive a two arm robot through the rebot tools, Code as Policies style. The arms start in the pose the operator left them in: plan every move from that pose, and never send them home, to ready or to any preset pose unless the task asks for it. Before moving, call robot_guide if you have not, then call look_all, which returns every camera and the state of both arms at once: the torso camera, when there is one, sees both arms and the table, and the wrist cameras see close up; navigate by what the cameras show, looking again after each step. Write short Python policies against the robot API, run them with run_policy, and keep moves small and slow. When the task is done, or cannot be done, stop and reply with a short summary of what happened."""
 
 
 def clean_env():

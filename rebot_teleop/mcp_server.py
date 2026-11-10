@@ -12,8 +12,10 @@ from rebot_teleop.agent import GUIDE, Robot, RobotError
 GUIDE_FILE = Path(__file__).resolve().parents[1] / "docs" / "ROBOT_GUIDE.md"
 INSTRUCTIONS = """\
 You control a two armed reBot robot (Seeed B601 RS arms on the sides of a post, phone eyes on top) through a
-teleop server, usually the PyBullet simulator. Work like Code as Policies: read the state, look through the
-cameras, then write a short Python policy against the robot API and run it with run_policy. Every move is planned
+teleop server, usually the PyBullet simulator. Work like Code as Policies: call look_all to see every camera and
+the state of both arms in one call, then write a short Python policy against the robot API and run it with
+run_policy, and call look_all again to check the result. Batch several moves into one policy when each step is
+safe, so the task needs fewer turns. If an arm reports a fault, find the cause, then call clear_faults. Every move is planned
 around the post, head and table and checked before anything moves; a refused move explains why.
 Call robot_guide first: it explains the frames, what each joint does, where each arm can reach (the arms share
 no workspace) and the develop, freeze, evaluate loop for tasks.
@@ -154,23 +156,61 @@ def stop() -> str:
         return f"Error: {error}"
 
 
-@server.tool(description="Look through a camera and keep the picture for locate: 'left' or 'right' wrist camera, 'torso' for the fixed camera on the real robot that sees both arms and the table (when fitted), or 'overview' for a view of the whole simulated robot. yaw and pitch in degrees turn the overview camera around the robot: yaw 90 looks at the face, 180 at the left side, 0 at the right side, 270 at the back; pitch -80 looks from above. Overview pictures are 640x480, wrist pictures 320x240 in the simulator")
-def look(camera: str = "overview", yaw: float = 120.0, pitch: float = -15.0, distance: float = 1.9) -> Image | str:
+def picture(current, camera, params=None):
+    import base64
+    data = current._get(f"/api/camera/{camera}/capture", params=params or {})
+    return Image(data=base64.b64decode(data["image_jpeg_base64"]), format="jpeg")
+
+
+def default_camera(current):
+    return "overview" if current.sim else "torso"
+
+
+@server.tool(description="Look through one camera and keep the picture for locate: 'torso' for the fixed depth camera on the real robot that sees both arms and the table, 'left' or 'right' wrist camera for the close approach, or 'overview' for a view of the whole simulated robot. Leave camera empty for the best whole scene view. yaw and pitch in degrees turn the overview camera around the robot: yaw 90 looks at the face, 180 at the left side, 0 at the right side, 270 at the back; pitch -80 looks from above")
+def look(camera: str = "", yaw: float = 120.0, pitch: float = -15.0, distance: float = 1.9) -> Image | str:
     try:
         current = connect()
+        camera = camera or default_camera(current)
         params = {"yaw": yaw, "pitch": pitch, "distance": distance} if camera == "overview" else {}
-        response = current.client.get(f"/api/camera/{camera}/capture", params=params)
-        if response.status_code >= 400:
-            return f"No picture: {response.text}"
-        import base64
-        return Image(data=base64.b64decode(response.json()["image_jpeg_base64"]), format="jpeg")
+        return picture(current, camera, params)
+    except RobotError as error:
+        return f"No picture: {error}"
+
+
+@server.tool(description="One call that returns every camera picture (the whole scene view first, then the left and right wrist cameras) followed by the state of both arms. Use it to start a task and to check the result of each step; it saves several separate look and get_state calls")
+def look_all() -> list:
+    try:
+        current = connect()
+    except RobotError as error:
+        return [f"Error: {error}"]
+    parts = []
+    for camera in [default_camera(current), *current.arms]:
+        try:
+            parts.append(f"{camera} camera:")
+            parts.append(picture(current, camera))
+        except RobotError as error:
+            parts.append(f"no picture: {error}")
+    try:
+        parts.append(report(current.state()))
+    except RobotError as error:
+        parts.append(f"No state: {error}")
+    return parts
+
+
+@server.tool(description="Clear an arm fault or a latched stop so the arms accept moves again. It never powers arms on and never moves them. Use it only after get_state shows a fault and you know what caused it; if the same fault comes back, stop and tell the operator")
+def clear_faults() -> str:
+    try:
+        return report(connect().clear_faults())
     except RobotError as error:
         return f"Error: {error}"
 
 
 @server.tool(description="Run a Python policy (Code as Policies). The code gets robot, np, math and time. Use print to report. Runs in its own process with a time limit; the arms stop if it fails or times out")
 async def run_policy(code: str, timeout_s: float = 120.0) -> str:
-    current = connect()
+    try:
+        current = connect()
+    except RobotError as error:
+        return f"Error: {error}"
     env = os.environ.copy()
     env.pop("REBOT_CODE", None)
     if current.session:
@@ -188,6 +228,8 @@ async def run_policy(code: str, timeout_s: float = 120.0) -> str:
             robot.stop()
             return f"Stopped: the policy ran longer than {timeout_s:.0f} s and the arms were stopped"
         text = output.decode(errors="replace")
+        if process.returncode != 0:
+            text += "\nThe policy failed. Call look_all to see where the arms ended up before trying again; if get_state shows a fault, find the cause before clear_faults."
         return text[-12000:] if text else f"[exit {process.returncode}, no output]"
     finally:
         Path(path).unlink(missing_ok=True)
