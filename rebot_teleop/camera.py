@@ -1,3 +1,5 @@
+import json
+from pathlib import Path
 import io
 import math
 import threading
@@ -82,6 +84,54 @@ class UsbCamera:
 
     def status(self):
         return {"kind": "usb", "device": str(self.device), "note": self.note}
+
+
+class FolderCamera:
+    def __init__(self, folder, max_age_s=2.0):
+        self.folder = Path(folder)
+        self.max_age_s = max_age_s
+        self.note = "waiting for the camera bridge"
+
+    def close(self):
+        pass
+
+    def read(self):
+        try:
+            info = json.loads((self.folder / "info.json").read_text())
+            jpeg = (self.folder / "color.jpg").read_bytes()
+        except (OSError, ValueError):
+            self.note = f"No frames in {self.folder}; is the camera bridge running?"
+            return None
+        age = time.time() - float(info.get("time", 0))
+        if age > self.max_age_s:
+            self.note = f"The camera bridge's last frame is {age:.0f} s old"
+            return None
+        depth = None
+        if info.get("depth"):
+            try:
+                raw = np.frombuffer((self.folder / "depth.raw").read_bytes(), dtype="<u2")
+                if raw.size == info["width"] * info["height"]:
+                    depth = raw.reshape(info["height"], info["width"]).astype(float) * float(info.get("depth_units_m", 0.001))
+                    depth[depth <= 0] = np.nan
+            except OSError:
+                depth = None
+        self.note = "streaming"
+        return jpeg, info, depth
+
+    def frame(self):
+        got = self.read()
+        return got[0] if got else None
+
+    def capture(self, pose):
+        got = self.read()
+        if not got:
+            return None
+        jpeg, info, depth = got
+        lens_info = {key: info[key] for key in ("width", "height", "fx", "fy", "cx", "cy")}
+        return {"jpeg": jpeg, "info": lens_info, "world_from_camera": pose, "depth_m": depth, "at": time.monotonic()}
+
+    def status(self):
+        return {"kind": "folder", "device": str(self.folder), "note": self.note}
 
 
 class SimCamera:

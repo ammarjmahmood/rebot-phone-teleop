@@ -502,3 +502,26 @@ def test_a_fixed_camera_that_belongs_to_no_arm_can_be_looked_through(tmp_path, m
     assert point == pytest.approx([0.4, 0.0, 0.7], abs=1e-3)
     with pytest.raises(ValueError):
         locate({**shot, "world_from_camera": None}, [(10, 10)], plane_z=0.7)
+
+
+def test_a_camera_bridge_folder_gives_colour_lens_and_depth_for_locate(tmp_path):
+    import json as json_module
+    import time as time_module
+    from rebot_teleop.camera import FolderCamera, look_at_pose, locate
+    width, height = 64, 48
+    depth = np.full((height, width), 500, dtype="<u2")
+    depth[0, 0] = 0
+    (tmp_path / "depth.raw").write_bytes(depth.tobytes())
+    (tmp_path / "color.jpg").write_bytes(b"\xff\xd8fake\xff\xd9")
+    (tmp_path / "info.json").write_text(json_module.dumps({"width": width, "height": height, "fx": 50.0, "fy": 50.0, "cx": 31.5, "cy": 23.5, "depth": True, "depth_units_m": 0.001, "time": time_module.time()}))
+    camera = FolderCamera(tmp_path)
+    pose = look_at_pose([0.0, 0.0, 1.0], [0.0, 0.0, 0.0])
+    shot = camera.capture(pose)
+    assert shot["jpeg"].startswith(b"\xff\xd8")
+    assert shot["info"]["fx"] == 50.0
+    assert np.isnan(shot["depth_m"][0, 0]) and shot["depth_m"][10, 10] == pytest.approx(0.5)
+    point = locate(shot, [(31, 23)])[0]
+    assert point["method"] == "depth"
+    assert point["xyz"] == pytest.approx([0.0, 0.0, 0.5], abs=0.02)
+    (tmp_path / "info.json").write_text(json_module.dumps({"width": width, "height": height, "fx": 50.0, "fy": 50.0, "cx": 31.5, "cy": 23.5, "depth": True, "time": time_module.time() - 60}))
+    assert camera.frame() is None and "old" in camera.status()["note"]

@@ -24,7 +24,7 @@ from rebot_teleop import policy
 from rebot_teleop import tasks
 from rebot_teleop.agent import Robot
 from rebot_teleop import cap
-from rebot_teleop.camera import SimCamera, SimView, UsbCamera, locate, look_at_pose, optical_pose, sim_capture, usb_capture
+from rebot_teleop.camera import FolderCamera, SimCamera, SimView, UsbCamera, locate, look_at_pose, optical_pose, sim_capture, usb_capture
 from fastapi.staticfiles import StaticFiles
 from rebot_teleop.auth import Auth, pairing_ttl
 from rebot_teleop.controller import TeleopController
@@ -220,7 +220,7 @@ def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, heb
         app.state.nodes = {name: build(name, channel) for name, channel in arms.items()}
         for name, device in camera_devices.items():
             if name not in app.state.nodes:
-                cameras[name] = UsbCamera(device)
+                cameras[name] = FolderCamera(device[len("folder:"):]) if str(device).startswith("folder:") else UsbCamera(device)
         for current in app.state.nodes.values():
             await current.start()
         if tunnel:
@@ -405,7 +405,10 @@ def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, heb
         elif name not in everything:
             shot = None
             for _ in range(30):
-                shot = await asyncio.to_thread(usb_capture, cameras[name], fixed_poses.get(name), camera_fov)
+                if isinstance(cameras[name], FolderCamera):
+                    shot = await asyncio.to_thread(cameras[name].capture, fixed_poses.get(name))
+                else:
+                    shot = await asyncio.to_thread(usb_capture, cameras[name], fixed_poses.get(name), camera_fov)
                 if shot:
                     break
                 await asyncio.sleep(0.1)

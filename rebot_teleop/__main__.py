@@ -91,7 +91,7 @@ def main():
     parser.add_argument("--sim", nargs="?", const="gui", choices=["gui", "headless"], help="Drive simulated arms in PyBullet instead of the CAN bus; the same IK, gravity compensation, safety checks and Quest page run unchanged")
     parser.add_argument("--mount", action="append", default=[], metavar="NAME=X,Y,Z,ROLL,PITCH,YAW", help="Where an arm's base sits on the robot in metres and degrees, overriding the saved mount; left and right default to the side mounted post assembly")
     parser.add_argument("--camera-pose", action="append", default=[], metavar="NAME=X,Y,Z,LOOK_X,LOOK_Y,LOOK_Z", help="Where a fixed camera sits and the point it looks at, in metres in the world frame, so locate works for it")
-    parser.add_argument("--camera", action="append", default=[], metavar="NAME=DEVICE", help="USB camera: an arm name for its wrist camera, for example --camera left=/dev/video0, or any other name for a fixed camera such as --camera torso=/dev/video2; in --sim each arm gets a rendered wrist camera")
+    parser.add_argument("--camera", action="append", default=[], metavar="NAME=DEVICE", help="USB camera: an arm name for its wrist camera, for example --camera left=/dev/video0, or any other name for a fixed camera such as --camera torso=/dev/video2, or torso=folder:/dev/shm/rebot-torso for frames written by a camera bridge such as scripts/hp60c_bridge.py; in --sim each arm gets a rendered wrist camera")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--https-port", type=int, default=9443, help="HTTPS port for the Quest page")
     parser.add_argument("--lan", action="store_true", help="Listen on the network so phones and headsets can connect")
