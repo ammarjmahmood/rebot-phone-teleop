@@ -22,6 +22,11 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 import numpy as np
 from rebot_teleop import policy
 from rebot_teleop import tasks
+from rebot_teleop.agent import Robot
+try:
+    from rebot_teleop import cap
+except ImportError:
+    cap = None
 from rebot_teleop.camera import SimCamera, SimView, UsbCamera, locate, optical_pose, sim_capture, usb_capture
 from fastapi.staticfiles import StaticFiles
 from rebot_teleop.auth import Auth, pairing_ttl
@@ -230,6 +235,7 @@ def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, heb
             sim.close()
 
     app = FastAPI(title="reBot teleop", lifespan=lifespan)
+    app.state.cap = {"running": False, "instruction": "", "model": "", "effort": "", "result": None, "saved": None, "events": [], "run": None}
 
     def local(request):
         return request.client.host in {"127.0.0.1", "::1", "testclient"} and request.url.hostname in {"127.0.0.1", "localhost", "testserver"} and not any(h in request.headers for h in ["forwarded", "x-forwarded-for", "x-forwarded-host"])
@@ -810,6 +816,83 @@ def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, heb
     @app.get("/quest")
     async def quest_page():
         return FileResponse(STATIC / "quest.html")
+
+    @app.get("/cap")
+    async def cap_page():
+        return FileResponse(STATIC / "cap.html")
+
+    def cap_view(after=0):
+        state = app.state.cap
+        if cap is None:
+            return {"running": False, "events": [], "next": 0, "missing": "The anthropic package is not installed on this computer: pip install anthropic==2.7.0", "key": False, "default_model": "claude-fable-5-2", "efforts": ["low", "medium", "high", "xhigh", "max"]}
+        return {
+            "running": state["running"], "instruction": state["instruction"], "model": state["model"], "effort": state["effort"],
+            "result": state["result"], "saved": state["saved"], "events": state["events"][after:], "next": len(state["events"]),
+            "key": bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN") or auth.values.get("ANTHROPIC_API_KEY")),
+            "default_model": cap.DEFAULT_MODEL, "efforts": cap.EFFORTS,
+        }
+
+    @app.get("/api/cap")
+    async def cap_status(request: Request, after: int = 0):
+        device(request)
+        return cap_view(max(0, after))
+
+    @app.post("/api/cap")
+    async def cap_start(request: Request):
+        device(request)
+        body = await body_of(request)
+        state = app.state.cap
+        if cap is None:
+            raise ValueError("The anthropic package is not installed on this computer: pip install anthropic==2.7.0")
+        if state["running"]:
+            raise ValueError("A policy is already running; stop it first")
+        instruction = str(body.get("instruction", "")).strip()
+        model = str(body.get("model") or cap.DEFAULT_MODEL).strip()
+        effort = str(body.get("effort") or "high")
+        if not instruction or len(instruction) > 2000:
+            raise ValueError("Type what the arms should do")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9.\-]{1,80}", model):
+            raise ValueError("That model name does not look right")
+        if effort not in cap.EFFORTS:
+            raise ValueError("Choose an effort: " + ", ".join(cap.EFFORTS))
+        if not cap.load_key(values=auth.values):
+            raise ValueError("No Anthropic API key. Put ANTHROPIC_API_KEY=... in the .env file in the data folder on this computer and press Run again")
+        events = []
+        state.update(running=True, instruction=instruction, model=model, effort=effort, result=None, saved=None, events=events)
+
+        def emit(kind, text, **extra):
+            events.append({"kind": kind, "text": text, "at": round(time.time(), 1), **extra})
+
+        def work():
+            run = None
+            try:
+                robot = Robot(f"http://127.0.0.1:{port}")
+                robot.ensure_ready()
+                run = cap.Run(robot, instruction, model, effort, emit=emit)
+                state["run"] = run
+                ok = run.run()
+                saved = run.save()
+                state.update(result="done" if ok else "failed", saved=str(saved.relative_to(cap.ROOT)) if saved else None)
+            except Exception as error:
+                emit("error", f"{type(error).__name__}: {error}")
+                state["result"] = "failed"
+            finally:
+                state.update(running=False, run=None)
+
+        threading.Thread(target=work, name="code-as-policy", daemon=True).start()
+        return cap_view()
+
+    @app.post("/api/cap/stop")
+    async def cap_stop(request: Request):
+        device(request)
+        run = app.state.cap.get("run")
+        if run is not None:
+            run.cancel.set()
+        for current in nodes(request).values():
+            for controller in current.controllers.values():
+                await controller.stop("Stop pressed", keep_source=True)
+            await current.stop("Stop pressed", latch=True)
+        return cap_view()
 
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
     return app

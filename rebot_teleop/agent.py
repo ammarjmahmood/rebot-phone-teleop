@@ -124,12 +124,12 @@ class Robot:
         return self.state()
 
     def ensure_ready(self):
-        arms = self.state()["arms"]
+        arms = self._get("/api/state")["arms"]
         if all(arm.get("ready") for arm in arms.values()):
             return
         if self.sim:
             for name, arm in arms.items():
-                if arm.get("fault"):
+                if arm.get("fault") or arm.get("estopped"):
                     self.client.post("/api/reset", json={"arm": name})
             self.power_on()
             return

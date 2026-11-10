@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>reBot code as policy</title>
+<link rel="stylesheet" href="/static/style.css">
+<style>
+textarea{font:inherit;padding:10px;border:1px solid #c8d6d0;border-radius:8px;width:100%;box-sizing:border-box;min-height:84px;resize:vertical}
+select{font:inherit;padding:8px;border:1px solid #c8d6d0;border-radius:6px;background:#fff;width:100%}
+.settings{display:grid;grid-template-columns:2fr 1fr;gap:12px}
+.examples button{min-height:36px;padding:6px 10px;font-size:14px}
+.split{display:grid;gap:16px;grid-template-columns:minmax(0,1fr)}
+@media (min-width:1100px){main.wide{max-width:1320px}.split{grid-template-columns:minmax(0,5fr) minmax(0,6fr)}.split .sim-card{position:sticky;top:76px;align-self:start}}
+#log{display:grid;gap:10px}
+.event{border-radius:8px;padding:10px 12px;font-size:14px;white-space:pre-wrap;overflow-wrap:anywhere}
+.event.text{background:#eef6ff;border:1px solid #cfe0f4}
+.event.info,.event.thinking{background:#f3f7f5;color:#61746d}
+.event.error{background:#fff1ed;color:#a3402f;border:1px solid #f0cfc6}
+.event pre{margin:6px 0 0;font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
+.event.code{background:#172a30;color:#e6f0ec}
+.event.output{background:#f6fbef;border:1px solid #d6ebb8}.event.output.bad{background:#fff1ed;border-color:#f0cfc6}
+.event img{width:100%;max-width:480px;border-radius:6px;display:block;margin-top:6px}
+.tag{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;opacity:.75}
+.state{font-weight:600}.state.running{color:#2f6f1f}.state.failed{color:#a3402f}
+.thinking .dots::after{content:'';animation:dots 1.4s steps(4) infinite}
+@keyframes dots{0%{content:''}25%{content:'.'}50%{content:'..'}75%{content:'...'}}
+</style>
+</head>
+<body>
+<header><h1>reBot code as policy</h1><span id="mode" class="fine"></span><button class="stop" id="stop" type="button">Stop</button></header>
+<main class="wide">
+<div class="split">
+<div style="display:grid;gap:16px;align-content:start">
+<section class="card">
+<h2>Tell the arms what to do</h2>
+<p class="fine">The model writes Python against the robot, runs it, looks through the cameras, and fixes its script until the task is done. Every move is checked by the planner before anything moves.</p>
+<form id="form">
+<textarea id="instruction" placeholder="Raise both hands above the table, open and close the grippers, then go back to ready" required></textarea>
+<div class="row examples" id="examples">
+<button type="button">Wave with the left arm</button>
+<button type="button">Raise both hands, then clap the grippers together gently</button>
+<button type="button">Pick up the red block and put it down 10 cm to the left</button>
+<button type="button">Go to the ready pose and open both grippers</button>
+</div>
+<div class="settings">
+<label>Model <input id="model" list="models" autocomplete="off" spellcheck="false"></label>
+<datalist id="models"><option value="claude-fable-5-2"><option value="claude-opus-5-5"><option value="claude-sonnet-5-5"><option value="claude-haiku-5-5"></datalist>
+<label>Effort <select id="effort"></select></label>
+</div>
+<div class="row"><button class="primary" id="run" type="submit">Run</button><span id="state" class="state" style="align-self:center"></span></div>
+</form>
+<p class="notice" id="notice" hidden></p>
+</section>
+<section class="card">
+<h2>What the model is doing</h2>
+<div id="log"><p class="fine">Nothing has run yet.</p></div>
+</section>
+</div>
+<section class="card sim-card" id="simcard">
+<h2>Arms</h2>
+<div class="sim-view"><img id="sim" alt="Live view of the simulated arms"></div>
+<p class="fine" id="simnote">Live picture of the simulator.</p>
+</section>
+</div>
+</main>
+<div id="toast" hidden></div>
+<script src="/static/cap.js"></script>
+</body>
+</html>
