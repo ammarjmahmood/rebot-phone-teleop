@@ -1,7 +1,7 @@
 const $ = id => document.getElementById(id);
 const CAMERAS = ['torso', 'left', 'right'];
 let ws = null, session = null, refSpace = null, gl = null, panel = null;
-let cameraIndex = 0, panelOn = true, lastButtons = {}, gripWas = {}, lastStatus = {}, dropped = 0;
+let cameraIndex = 0, panelOn = true, lastButtons = {}, gripWas = {}, lastStatus = {}, seq = 0, rtt = null;
 
 function status(text) { $('status').textContent = text; }
 
@@ -12,6 +12,7 @@ function connect() {
     const m = JSON.parse(event.data);
     if (m.type !== 'status' && m.type !== 'started') return;
     lastStatus = m.arms || lastStatus;
+    if (m.type === 'status' && m.t) { rtt = Date.now() - m.t; const tl = m.teleop || {}; $('link').textContent = `Round trip ${rtt} ms, ${tl.input_hz || 0} frames/s, ${tl.dropped || 0} dropped`; }
     const chips = Object.entries(m.arms || {}).map(([n, a]) => `<span class="${a.ready ? 'ok' : 'warn'}">${n}: ${a.ready ? 'ready' : a.connected ? 'torque off' : 'offline'}</span>`);
     $('arms').innerHTML = chips.join('');
     if (m.type === 'started' && m.offline && m.offline.length) status(`Ready with ${m.powered.join(' and ') || 'no arm'}. ${m.offline.join(' and ')} offline.`);
@@ -127,8 +128,7 @@ function onFrame(time, frame) {
     hands[hand] = entry;
   }
   if (ws && ws.readyState === 1) {
-    if (ws.bufferedAmount < 4096) ws.send(JSON.stringify({ type: 'hands', source: 'quest', t: Date.now(), yaw: viewer ? headsetYaw(viewer) : 0, hands }));
-    else dropped++;
+    ws.send(JSON.stringify({ type: 'hands', source: 'quest', seq: seq++, t: Date.now(), rtt, yaw: viewer ? headsetYaw(viewer) : 0, hands }));
   }
 }
 

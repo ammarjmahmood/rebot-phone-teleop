@@ -8,6 +8,7 @@ os.environ["REBOT_DATA"] = tempfile.mkdtemp(prefix="rebot-test-")
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
+from rebot_teleop import config as C
 from rebot_teleop.robot import Robot
 from rebot_teleop.sequencer import Sequencer
 from rebot_teleop.teleop import Teleop, XR_TO_ROBOT
@@ -149,3 +150,37 @@ def test_server_endpoints():
         captured = client.post("/api/seq/test/capture", json={}).json()
         assert len(captured["steps"]) == 1
         assert client.post("/api/stop").json()["stopped"]
+
+
+def test_overheat_goes_home_and_recovers(robot):
+    robot.power_on()
+    unit = robot.units["left"]
+    robot.go("ready", "left")
+    robot.wait(20)
+    arm = unit.arm
+    bus = robot.factory.buses["can1"]
+    bus.temperature = 97.0
+    assert wait_until(lambda: arm.cooling, 3)
+    assert "Over temperature" in arm.fault and not unit.ready
+    assert wait_until(lambda: not arm.busy, 20)
+    assert np.max(np.abs(arm.command[:6] - arm.home_q)) < math.radians(0.5)
+    with pytest.raises(ValueError):
+        arm.servo(arm.command[:6])
+    bus.temperature = 80.0
+    assert wait_until(lambda: not arm.cooling, 3)
+    assert arm.fault is None and unit.ready
+
+
+def test_offline_arm_twin_shows_home_pose():
+    r = Robot(sim=True)
+    unit = r.units["left"]
+    links = unit.kin.links(np.radians(C.POSES_DEG["home"]["left"]), C.GRIPPER_WIDTH_M / 2)
+    assert np.allclose(np.array(r.twin()["left"]["link3"]), np.round(links["link3"][:3, :].reshape(-1), 5))
+
+
+def test_reaches_below_its_base_across_the_body(robot):
+    kin = robot.units["left"].kin
+    rotation = kin.pose(np.radians(C.POSES_DEG["ready"]["left"]))[1]
+    goal = np.array([0.35, -0.2, 0.6])
+    best = min(kin.ik(goal, rotation, np.radians(seed), iterations=200)[1] for seed in ([-60, 200, 60, 0, 0, 0], [-30, 190, 80, 0, 0, 0], C.POSES_DEG["ready"]["left"]))
+    assert best < 0.01

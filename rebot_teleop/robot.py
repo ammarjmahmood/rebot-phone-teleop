@@ -47,6 +47,7 @@ class Unit:
         self.factory = factory
         self.channel = C.DEFAULT_CAN.get(name, "can0")
         self.arm = Arm(name, self.channel, gravity=self.kin.gravity_function(), controller_factory=factory)
+        self.arm.home_q = np.radians(C.POSES_DEG["home"][name])
         gripper = settings.get("gripper_range")
         if gripper:
             try:
@@ -225,7 +226,8 @@ class Robot:
     def twin(self):
         out = {}
         for name, unit in self.units.items():
-            links = unit.kin.links(unit.arm.q, unit.arm.width)
+            q = unit.arm.q if unit.arm.feedback_at else np.radians(C.POSES_DEG["home"][name])
+            links = unit.kin.links(q, unit.arm.width if unit.arm.feedback_at else C.GRIPPER_WIDTH_M / 2)
             out[name] = {link: np.round(m[:3, :].reshape(-1), 5).tolist() for link, m in links.items()}
         return out
 

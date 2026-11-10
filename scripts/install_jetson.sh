@@ -46,6 +46,8 @@ ACTION=="add", SUBSYSTEM=="net", DRIVERS=="peak_usb", RUN+="/usr/sbin/ip link se
 EOF
 rm -f /etc/udev/rules.d/80-rebot-teleop-can.rules
 install -m 644 "$REPO/vendor/angstrong/angstrong-camera.rules" /etc/udev/rules.d/56-angstrong-camera.rules
+command -v adb >/dev/null || apt-get install -y adb || true
+echo 'SUBSYSTEM=="usb", ATTR{idVendor}=="2833", MODE="0666", GROUP="plugdev"' > /etc/udev/rules.d/51-rebot-quest.rules
 udevadm control --reload
 udevadm trigger --subsystem-match=net --action=add || true
 for path in /sys/class/net/*; do

@@ -41,6 +41,8 @@ def markdown(items):
     for index, item in enumerate(items):
         title = ">> LOCAL, FASTEST <<" if index == 0 and item["kind"] == "WiFi" else item["kind"]
         lines += [f"## [{title}]({item['quest']})", "", f"`{item['quest']}`", "", f"Phone: [{item['phone']}]({item['phone']})  ", f"Dashboard: [{item['dashboard']}]({item['dashboard']})", ""]
+    usb = f"http://localhost:{C.HTTP_PORT}/quest"
+    lines += ["## [USB cable, lowest latency](" + usb + ")", "", f"`{usb}`", "", "Plug the Quest into the Jetson with a USB C cable (developer mode on, allow USB debugging once). No WiFi in the loop.", ""]
     lines += [f"_Updated {time.strftime('%A %b %d, %Y %I:%M %p')}_", "", "Open the Quest link in the Quest browser and press Enter VR.", "The first visit asks to trust the robot's certificate: Advanced, then Proceed."]
     return "\n".join(lines) + "\n"
 

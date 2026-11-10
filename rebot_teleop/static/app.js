@@ -58,7 +58,7 @@ function pills() {
   const out = [];
   for (const [name, a] of Object.entries(state.arms)) {
     const cls = a.fault ? 'bad' : a.powered ? 'ok' : a.connected ? 'blue' : 'warn';
-    const text = a.fault ? 'fault' : a.powered ? 'powered' : a.connected ? 'connected, torque off' : 'offline';
+    const text = a.cooling ? 'over temperature, cooling at home' : a.fault ? 'fault' : a.powered ? 'powered' : a.connected ? 'connected, torque off' : 'offline';
     out.push(el('span', { class: 'pill ' + cls, title: a.note || '' }, `${name}: ${text}`));
   }
   const t = state.teleop;
@@ -98,7 +98,7 @@ function renderArms() {
     armCard(name);
     const pill = $(`pill-${name}`);
     pill.className = 'pill ' + (a.fault ? 'bad' : a.powered ? 'ok' : a.connected ? 'blue' : 'warn');
-    pill.textContent = a.fault ? 'fault' : a.powered ? `powered ${a.loop_hz} Hz` : a.connected ? 'torque off, hand guide' : 'offline';
+    pill.textContent = a.cooling ? 'over temperature' : a.fault ? 'fault' : a.powered ? `powered ${a.loop_hz} Hz` : a.connected ? 'torque off, hand guide' : 'offline';
     $(`note-${name}`).textContent = [a.fault, a.note, a.warm].filter(Boolean).join('. ');
     $(`note-${name}`).className = a.fault ? 'fault' : 'note';
     for (let i = 0; i < 6; i++) {
@@ -178,6 +178,7 @@ function renderTeleop() {
       $('phone-qr').replaceChildren(el('img', { src: '/api/qr.svg?text=' + encodeURIComponent(link.phone) }));
     }
   }
+  if (state.usb) $('usb-status').textContent = '(' + state.usb.state + ')';
   if (state.gist) { if (state.gist.url) $('gist-link').href = state.gist.url; $('gist-status').textContent = state.gist.status || ''; }
   if (!t.settings) return;
   const s = t.settings;
@@ -186,7 +187,7 @@ function renderTeleop() {
   $('tele-scale-v').textContent = Number(s.scale).toFixed(1) + 'x';
   $('tele-rot').checked = !!s.rotation;
   $('tele-gaze').checked = !!s.follow_gaze;
-  const lines = [`teleop ${t.active ? 'on (' + t.source + ')' : 'off'}   input ${t.input_hz} Hz   loop ${t.loop_hz} Hz`];
+  const lines = [`teleop ${t.active ? 'on (' + t.source + ')' : 'off'}   input ${t.input_hz} Hz   loop ${t.loop_hz} Hz   round trip ${t.latency_ms ?? '?'} ms   frames ${t.frames || 0}, dropped ${t.dropped || 0}`];
   for (const [n, h] of Object.entries(t.hands || {})) {
     const a = state.arms[n] || {};
     lines.push(`${n.padEnd(6)} ${a.powered ? 'ready' : a.connected ? 'torque off' : 'offline'}  ${h.engaged ? 'MOVING' : 'holding'}  reach error ${h.reach_error_cm} cm  input age ${h.age_ms ?? '-'} ms`);
@@ -336,6 +337,7 @@ function connect() {
     if (m.cameras) state.cameras = m.cameras;
     if (m.links) state.links = m.links;
     if (m.gist) state.gist = m.gist;
+    if (m.usb) state.usb = m.usb;
     for (const t of Object.values(twins)) t.update(m.twin, m.arms);
     pills();
     if (state.tab === 'home') { renderArms(); liftWidget('lift-home'); }

@@ -58,6 +58,11 @@ class Teleop:
         self.input_hz = 0.0
         self.inputs = 0
         self.latency_ms = None
+        self.dropped = 0
+        self.frames = 0
+        self.last_seq = None
+        self.pending = False
+        self.wake = threading.Event()
         self.thread = threading.Thread(target=self._loop, name="teleop", daemon=True)
         self.thread.start()
         robot.listeners.append(self.release_all)
@@ -78,6 +83,9 @@ class Teleop:
             self.active = True
             self.source = source
             self.started_at = time.monotonic()
+            self.frames = 0
+            self.dropped = 0
+            self.last_seq = None
             for hand in self.hands.values():
                 hand.engaged = False
                 hand.reference = None
@@ -105,8 +113,19 @@ class Teleop:
             self.start(source)
         sent = message.get("t")
         yaw = float(message.get("yaw", 0.0) or 0.0)
+        seq = message.get("seq")
+        if isinstance(message.get("rtt"), (int, float)):
+            self.latency_ms = round(float(message["rtt"]))
         with self.lock:
             self.inputs += 1
+            self.frames += 1
+            if isinstance(seq, int):
+                if self.last_seq is not None and seq > self.last_seq + 1:
+                    self.dropped += seq - self.last_seq - 1
+                self.last_seq = seq
+            if self.pending:
+                self.dropped += 1
+            self.pending = True
             for name, data in (message.get("hands") or {}).items():
                 if name not in self.hands or not isinstance(data, dict):
                     continue
@@ -126,6 +145,7 @@ class Teleop:
                 self.lift.hold("up" if stick[1] < 0 else "down")
             else:
                 self.lift.release()
+        self.wake.set()
         return sent
 
     def push_velocity(self, arm, linear, angular, grip=None, clutch=True):
@@ -140,6 +160,7 @@ class Teleop:
             hand.velocity = {"at": now, "linear": np.asarray(linear, dtype=float), "angular": np.asarray(angular, dtype=float), "clutch": bool(clutch)}
             if grip is not None:
                 hand.sample = {"at": now, "trigger": 1.0 - float(grip), "grip": 0.0, "position": None, "rotation": None, "yaw": 0.0, "stick": [0, 0], "buttons": {}}
+        self.wake.set()
 
     def _frame(self, yaw):
         view = about_z(VIEWS.get(self.settings.get("view", "behind"), 0.0))
@@ -148,29 +169,28 @@ class Teleop:
 
     def _loop(self):
         period = 1.0 / RATE_HZ
-        next_tick = time.perf_counter()
+        last = time.perf_counter()
         ticks, window, inputs_at = 0, time.perf_counter(), 0
         while True:
+            self.wake.wait(period)
+            self.wake.clear()
+            now = time.perf_counter()
+            dt, last = min(now - last, 0.05), now
             try:
                 if self.active:
-                    self._step(time.monotonic(), period)
+                    self._step(time.monotonic(), dt)
             except Exception as error:
                 print("teleop step failed:", error, flush=True)
             ticks += 1
-            now = time.perf_counter()
             if now - window >= 1.0:
                 self.loop_hz = ticks / (now - window)
                 self.input_hz = (self.inputs - inputs_at) / (now - window)
                 inputs_at = self.inputs
                 ticks, window = 0, now
-            next_tick += period
-            delay = next_tick - time.perf_counter()
-            if delay > 0:
-                time.sleep(delay)
-            else:
-                next_tick = time.perf_counter()
 
     def _step(self, now, dt):
+        with self.lock:
+            self.pending = False
         for name, hand in self.hands.items():
             unit = self.robot.units[name]
             arm = unit.arm
@@ -238,5 +258,6 @@ class Teleop:
     def status(self):
         return {
             "active": self.active, "source": self.source, "settings": self.settings, "loop_hz": round(self.loop_hz), "input_hz": round(self.input_hz),
+            "frames": self.frames, "dropped": self.dropped, "latency_ms": self.latency_ms,
             "hands": {n: {"engaged": h.engaged, "reach_error_cm": round(h.reach_error * 100, 1), "age_ms": None if h.sample is None else round((time.monotonic() - h.sample["at"]) * 1000)} for n, h in self.hands.items()},
         }

@@ -87,6 +87,7 @@ export class Twin {
         const material = new THREE.MeshStandardMaterial({ color: new THREE.Color(...part.rgba.slice(0, 3)), roughness: 0.5, metalness: 0.15 });
         geometry(part.mesh).then(g => {
           const mesh = new THREE.Mesh(g, material);
+          if (group.userData.offline) { material.transparent = true; material.opacity = 0.6; }
           mesh.matrixAutoUpdate = false;
           mesh.matrix.copy(matrix4(part.origin));
           group.add(mesh);
@@ -107,7 +108,10 @@ export class Twin {
         group.matrix.copy(matrix12(m));
         group.matrixWorldNeedsUpdate = true;
         group.visible = true;
-        group.traverse(o => { if (o.material) { o.material.transparent = !!offline; o.material.opacity = offline ? 0.25 : 1; } });
+        if (group.userData.offline !== !!offline) {
+          group.userData.offline = !!offline;
+          group.traverse(o => { if (o.material) { o.material.transparent = !!offline; o.material.opacity = offline ? 0.6 : 1; o.material.needsUpdate = true; } });
+        }
       }
     }
   }

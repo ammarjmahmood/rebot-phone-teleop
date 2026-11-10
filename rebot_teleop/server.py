@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from rebot_teleop import config as C
 from rebot_teleop import links, twin
+from rebot_teleop.usb_link import QuestUsb
 from rebot_teleop.cameras import Cameras
 from rebot_teleop.kin import top_down
 from rebot_teleop.lift import Lift
@@ -73,6 +74,7 @@ def create_app(sim=False, arms=("left", "right"), start_hardware=True):
     teleop = Teleop(robot, lift)
     sequencer = Sequencer(robot, lift)
     gist = links.Gist()
+    usb = QuestUsb()
     cap_runs = {"current": None, "events": [], "seq": 0}
     scene_cache = {}
 
@@ -84,6 +86,7 @@ def create_app(sim=False, arms=("left", "right"), start_hardware=True):
             if not sim:
                 lift.start()
                 gist.run_forever()
+                usb.start()
         yield
         teleop.stop()
         robot.close()
@@ -116,7 +119,7 @@ def create_app(sim=False, arms=("left", "right"), start_hardware=True):
     def full_status():
         return {
             **robot.status(), "teleop": teleop.status(), "sequencer": sequencer.status(), "lift": lift.status(),
-            "cameras": cameras.status(), "links": links.urls(), "gist": {"url": gist.url, "status": gist.status}, "time": time.time(),
+            "cameras": cameras.status(), "links": links.urls(), "gist": {"url": gist.url, "status": gist.status}, "usb": usb.status(), "time": time.time(),
         }
 
     @app.get("/")
@@ -472,7 +475,7 @@ def create_app(sim=False, arms=("left", "right"), start_hardware=True):
             while True:
                 message = {"twin": robot.twin(), "arms": {n: u.status() for n, u in robot.units.items()}, "teleop": teleop.status(), "sequencer": sequencer.status(), "lift": lift.status(), "sim": robot.sim}
                 if tick % 10 == 0:
-                    message.update({"cameras": cameras.status(), "links": links.urls(), "gist": {"url": gist.url, "status": gist.status}, "can": robot.status()["can"]})
+                    message.update({"cameras": cameras.status(), "links": links.urls(), "usb": usb.status(), "gist": {"url": gist.url, "status": gist.status}, "can": robot.status()["can"]})
                 await websocket.send_text(json.dumps(message))
                 tick += 1
                 await asyncio.sleep(0.05)

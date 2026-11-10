@@ -60,6 +60,8 @@ class Arm:
         self.gripper_open = math.radians(C.GRIPPER_OPEN_DEG)
         self.gripper_stalled = False
         self.fault = None
+        self.cooling = False
+        self.home_q = None
         self.note = None
         self.feedback_at = 0.0
         self.running = threading.Event()
@@ -169,7 +171,7 @@ class Arm:
     def _raise_torque_limits(self):
         for index, ((_, model), motor) in enumerate(zip(C.MOTORS, self.motors)):
             limit = self.torque_limits[index]
-            if limit is not None and limit < C.RATED_NM[model]:
+            if limit is not None and limit < C.PEAK_NM[model] - 0.05:
                 try:
                     motor.robstride_write_param_f32(TORQUE_LIMIT_PARAM, C.PEAK_NM[model])
                     self.torque_limits[index] = C.PEAK_NM[model]
@@ -198,7 +200,8 @@ class Arm:
             self.target[:6] = np.clip(q[:6], LOWER, UPPER)
             self.rate = np.zeros(7)
             self.trajectory = None
-            self.fault = None
+            if not self.cooling:
+                self.fault = None
             self.gripper_stalled = False
             for motor, position, offset, (kp, kd) in zip(self.motors, q, self.offset, C.GAINS):
                 motor.send_mit(float(position - offset), 0.0, kp, kd, 0.0)
@@ -323,10 +326,36 @@ class Arm:
                 self.note = None
         elif now - self.feedback_at > C.FEEDBACK_TIMEOUT_S:
             self.note = f"No feedback from the {self.name} arm for {now - self.feedback_at:.1f} s; check its power and CAN cable"
-        hot = [i + 1 for i, t in enumerate(self.temperatures) if t is not None and t >= C.TEMPERATURE_LIMIT_C]
-        if hot and not self.fault:
-            self.fault = f"Joint {hot[0]} reached {C.TEMPERATURE_LIMIT_C:.0f} C; holding still until it cools"
-            self.hold()
+        if temperatures:
+            self._watch_temperature()
+
+    def _watch_temperature(self):
+        known = [(i + 1, t) for i, t in enumerate(self.temperatures) if t is not None]
+        hot = [(j, t) for j, t in known if t >= C.TEMPERATURE_LIMIT_C]
+        if hot and not self.cooling:
+            joint, t = max(hot, key=lambda h: h[1])
+            self.cooling = True
+            self.fault = f"Over temperature: joint {joint} at {t:.0f} C. Going home to cool; usable again below {C.COOLED_C:.0f} C"
+            self._go_home()
+        elif self.cooling:
+            peak = max((t for _, t in known), default=0.0)
+            if peak < C.COOLED_C:
+                self.cooling = False
+                self.fault = None
+            elif self.trajectory is None:
+                self.fault = f"Over temperature: resting at home, {peak:.0f} C now, usable again below {C.COOLED_C:.0f} C"
+
+    def _go_home(self):
+        self.rate[:] = 0.0
+        if self.home_q is None or not self.torque:
+            self.trajectory = None
+            self.target = self.command.copy()
+            return
+        goal = np.clip(np.asarray(self.home_q, dtype=float)[:6], LOWER, UPPER)
+        samples = min_jerk(self.command[:6], goal, math.radians(C.COOL_HOME_DEG_S), math.radians(C.MOVE_DEG_S2), 0.01)
+        self.trajectory = (np.array([t for t, _ in samples]), np.array([q for _, q in samples]))
+        self.trajectory_start = time.monotonic()
+        self.target[:6] = goal
 
     def hold(self):
         with self.lock:
@@ -404,9 +433,10 @@ class Arm:
         return float(self.measured[6])
 
     def clear_fault(self):
-        hot = [t for t in self.temperatures if t is not None and t >= C.TEMPERATURE_LIMIT_C - 5]
+        hot = [t for t in self.temperatures if t is not None and t >= C.COOLED_C]
         if hot:
-            raise ValueError(f"Still {max(hot):.0f} C; wait a little longer")
+            raise ValueError(f"Still {max(hot):.0f} C; usable again below {C.COOLED_C:.0f} C")
+        self.cooling = False
         self.fault = None
 
     @property
@@ -419,7 +449,7 @@ class Arm:
             warm = [(i + 1, t) for i, t in enumerate(self.temperatures) if t is not None and t >= C.TEMPERATURE_WARN_C]
             return {
                 "name": self.name, "channel": self.channel, "connected": self.connected, "powered": self.torque,
-                "motors_answering": list(self.answering), "fault": self.fault, "note": self.note,
+                "motors_answering": list(self.answering), "fault": self.fault, "cooling": self.cooling, "note": self.note,
                 "joints_deg": [round(math.degrees(v), 2) for v in self.measured[:6]],
                 "command_deg": [round(math.degrees(v), 2) for v in self.command[:6]],
                 "velocity_deg_s": [round(math.degrees(v), 1) for v in self.velocity[:6]],
