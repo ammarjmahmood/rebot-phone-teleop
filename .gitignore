@@ -11,3 +11,4 @@ ios/**/DerivedData/
 ios/**/build/
 xcuserdata/
 ios/**/Sources/Info.plist
+results/

@@ -187,7 +187,7 @@ python -m rebot_teleop --sim --data ~/.rebot-teleop-sim
 python -m rebot_teleop --sim --cloudflare --data ~/.rebot-teleop-sim
 ```
 
-The first opens a 3D window and the dashboard at http://127.0.0.1:8080. The second also prints a public https link, so a Quest anywhere can drive the simulated arms after pairing with a code from the dashboard. Arms are named `left` and `right` and follow the matching Quest controllers.
+The first opens the dashboard at http://127.0.0.1:8080 in your browser, whose Simulation view shows the arms, the table and the objects rendered on the GPU. `--sim headless` skips opening the browser. `python -m rebot_teleop.twin` opens a PyBullet window that mirrors the arms of any server, real or simulated. The second also prints a public https link, so a Quest anywhere can drive the simulated arms after pairing with a code from the dashboard. Arms are named `left` and `right` and follow the matching Quest controllers.
 
 Check the whole chain automatically while the server runs:
 
@@ -240,7 +240,7 @@ The picture is also at `/api/sim/view.jpg` and `/api/sim/view.mjpg` with `yaw`, 
 
 ### VR in the simulation
 
-Start the simulator with `--lan` on Tailscale or with `--cloudflare`, open the Quest page from the pairing code on the headset, and the Quest controllers drive the simulated arms exactly as they would drive the real ones. Watch the 3D window or the Simulation view while you move. `scripts/validate_sim.py` runs the same checks without a headset.
+Start the simulator with `--lan` on Tailscale or with `--cloudflare`, open the Quest page from the pairing code on the headset, and the Quest controllers drive the simulated arms exactly as they would drive the real ones. Watch the Simulation view on the dashboard while you move. `scripts/validate_sim.py` runs the same checks without a headset.
 
 ### Agents and code as policy
 
@@ -290,6 +290,34 @@ robot.say("wave left arm then go home")
 ```
 
 World frame: x forward toward the eyes, y to the robot's left, z up, metres, origin at the foot of the post.
+
+### Tasks: develop, freeze, evaluate
+
+The simulator has a table and a small benchmark in the style of RoboDojo's code as policies runs: `lift_block`, `block_in_bin`, `stack`, `sort_colors` (both arms) and `lift_both` (both arms at once). Each task spawns seeded layouts and checks success from the object positions.
+
+```bash
+python -m rebot_teleop.dojo list
+python -m rebot_teleop.dojo reset stack --seed 3
+python -m rebot_teleop.dojo eval stack --seeds 100-119
+python -m rebot_teleop.dojo summary
+```
+
+An agent develops `policies/<task>.py` on seeds 0 to 99 (resetting, looking, running and fixing, usually about ten attempts), then the file is frozen and evaluated on seeds 100 and up with no agent involved and ground truth positions hidden, so the policy has to find objects with the cameras. `policies/baseline/lift_block.py` is a camera only example.
+
+Policies can see: `robot.capture(camera)` returns the picture with its lens and pose, `robot.locate(camera, pixels)` turns pixels into world points (depth in the simulator, a table plane on hardware), and `robot.find_objects(camera, "red")` does both for coloured objects. The overview camera exists only in the simulator.
+
+### Fable in Claude Code
+
+`.mcp.json` registers the robot tools for Claude Code in this folder, so on the PC or the Jetson:
+
+```bash
+scripts/setup_agent.sh
+claude login
+python -m rebot_teleop --sim headless --lan
+claude --model claude-fable-5-2
+```
+
+Approve the `rebot` server when Claude Code asks, then give it a task, for example "do the stack task: develop a policy on seeds 0 to 9, then evaluate it". `docs/ROBOT_GUIDE.md` is what the agent reads about the robot. Run the simulator on the PC: PyBullet renders camera pictures on the GPU there, while the Jetson has no prebuilt PyBullet and would render on the CPU.
 
 ### Temperature
 

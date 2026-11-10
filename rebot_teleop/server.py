@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import fnmatch
 import hmac
 import ipaddress
@@ -20,7 +21,8 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 import numpy as np
 from rebot_teleop import policy
-from rebot_teleop.camera import SimCamera, SimView, UsbCamera
+from rebot_teleop import tasks
+from rebot_teleop.camera import SimCamera, SimView, UsbCamera, locate, optical_pose, sim_capture, usb_capture
 from fastapi.staticfiles import StaticFiles
 from rebot_teleop.auth import Auth
 from rebot_teleop.controller import TeleopController
@@ -151,13 +153,18 @@ def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, heb
     sim = None
     if os.environ.get("REBOT_TELEOP_SIM"):
         from rebot_teleop.sim import SimWorld
-        sim = SimWorld(gui=os.environ["REBOT_TELEOP_SIM"] == "gui")
+        sim = SimWorld(gui=False)
     sim_view = SimView(sim) if sim else None
     camera_devices = json.loads(os.environ.get("REBOT_TELEOP_CAMERAS", "{}") or "{}")
     cameras = {}
     gist_file = Path(data_dir) / "gist_id"
     token = auth.values.get("REBOT_TELEOP_GIST_TOKEN", "")
     gist = GistBookmark(token, gist_file.read_text().strip() if gist_file.exists() else auth.values.get("REBOT_TELEOP_GIST_ID", ""), gist_file) if tunnel and token else None
+
+    fixed_table = json.loads(os.environ.get("REBOT_TELEOP_TABLE", "") or "null")
+    camera_fov = float(os.environ.get("REBOT_TELEOP_CAMERA_FOV", "80"))
+    captures = {}
+    task_state = {"name": None, "seed": None}
 
     def host_allowed(hostname):
         return hostname in allowed or any(fnmatch.fnmatch(hostname or "", pattern) for pattern in patterns)
@@ -174,6 +181,8 @@ def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, heb
             cameras[name] = UsbCamera(camera_devices[name])
         elif sim and not node_factory:
             cameras[name] = SimCamera(sim, channel)
+        if fixed_table:
+            current.set_obstacles([tasks.table_box(fixed_table)])
         current.name = name
         current.hand = name if name in {"left", "right"} else "right"
         current.controllers = {
@@ -362,6 +371,109 @@ def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, heb
         if body.get("dry_run"):
             return {"ok": True, "plan": {name: {"joints_deg": np.degrees(move.q).round(1).tolist(), "tip_xyz": views[name].kin.pose(move.q)[0].round(4).tolist(), "note": move.note} for name, move in step.items()}}
         return await run_steps(principal, everything, [step], speed, "Agent move")
+
+    async def capture_from(request, name):
+        everything = nodes(request)
+        if name == "overview":
+            if not sim:
+                raise HTTPException(404, "Only the simulator has an overview camera")
+            shot = await asyncio.to_thread(sim_capture, sim, "overview", 85, view_args(request))
+        elif name not in cameras:
+            raise HTTPException(404, "No camera on that arm; cameras are " + ", ".join([*cameras, *(["overview"] if sim else [])]))
+        elif sim and isinstance(cameras[name], SimCamera):
+            shot = await asyncio.to_thread(sim_capture, sim, everything[name].arm.channel)
+        else:
+            current = everything[name]
+            q = current.arm.q.copy()
+            position, rotation = current.kin.frame_pose("wrist_camera", q)
+            shot = None
+            for _ in range(30):
+                shot = await asyncio.to_thread(usb_capture, cameras[name], optical_pose(position, rotation), camera_fov)
+                if shot:
+                    break
+                await asyncio.sleep(0.1)
+        if not shot:
+            raise HTTPException(503, "No picture yet from " + name)
+        captures[name] = shot
+        return shot
+
+    def view_args(request):
+        query = request.query_params
+        return float(query.get("yaw", 120.0)), float(query.get("pitch", -15.0)), float(query.get("distance", 1.9)), float(query.get("height", 0.95))
+
+    @app.get("/api/camera/{name}/capture")
+    async def camera_capture(name: str, request: Request):
+        actor(request)
+        shot = await capture_from(request, name)
+        return {**shot["info"], "world_from_camera": np.round(shot["world_from_camera"], 5).tolist(), "has_depth": shot["depth_m"] is not None, "image_jpeg_base64": base64.b64encode(shot["jpeg"]).decode()}
+
+    @app.post("/api/camera/{name}/locate")
+    async def camera_locate(name: str, request: Request):
+        actor(request)
+        body = await body_of(request)
+        shot = captures.get(name) if body.get("use_last", True) else None
+        if shot is None:
+            shot = await capture_from(request, name)
+        plane = body.get("plane_z")
+        if plane is None and shot["depth_m"] is None:
+            table = (sim.table if sim else None) or fixed_table
+            plane = table["top"] if table else None
+        return {"points": locate(shot, body.get("pixels", []), plane), "camera": name}
+
+    @app.get("/api/sim/scene")
+    async def sim_scene(request: Request):
+        actor(request)
+        if not sim:
+            raise HTTPException(404)
+        return {**sim.scene_snapshot(), "renderer": getattr(sim, "render_note", "")}
+
+    @app.get("/api/sim/objects")
+    async def sim_objects(request: Request):
+        actor(request)
+        if not sim:
+            raise HTTPException(404, "Object positions only exist in the simulator; use the cameras on the real robot")
+        return sim.object_states()
+
+    @app.get("/api/sim/task")
+    async def sim_task_status(request: Request):
+        actor(request)
+        if not sim:
+            raise HTTPException(404, "Tasks run in the simulator")
+        result = {"tasks": {name: {"text": spec["text"], "arms": spec["arms"]} for name, spec in tasks.TASKS.items()}, "task": task_state["name"], "seed": task_state["seed"]}
+        if task_state["name"]:
+            states = sim.object_states()
+            ok, detail = tasks.check(task_state["name"], states)
+            result.update({"text": tasks.TASKS[task_state["name"]]["text"], "success": ok, "detail": detail})
+        return result
+
+    @app.post("/api/sim/task")
+    async def sim_task_reset(request: Request):
+        principal = actor(request, "operator")
+        if not sim:
+            raise HTTPException(404, "Tasks run in the simulator")
+        body = await body_of(request)
+        name = body.get("name")
+        everything = nodes(request)
+        if name in (None, "", "none"):
+            await asyncio.to_thread(sim.set_scene, {})
+            for current in everything.values():
+                current.set_obstacles([])
+            task_state.update(name=None, seed=None)
+            return {"task": None}
+        spec = tasks.scene(name, int(body.get("seed", 0)))
+        box = tasks.table_box(spec["table"])
+        for current in everything.values():
+            current.set_obstacles([box])
+        if body.get("ready", True):
+            ready = {arm: policy.Move(arm, np.radians(tasks.READY_DEG[arm]), policy.WIDTH_OPEN, f"{arm} ready") for arm in everything if arm in tasks.READY_DEG}
+            await asyncio.to_thread(sim.set_scene, {"table": spec["table"]})
+            moved = await run_steps(principal, everything, [ready], policy_speed, "Task reset")
+            if moved.get("interrupted"):
+                raise ValueError("Task reset was interrupted")
+        states = await asyncio.to_thread(sim.set_scene, spec)
+        task_state.update(name=name, seed=int(body.get("seed", 0)))
+        await asyncio.sleep(0.5)
+        return {"task": name, "seed": task_state["seed"], "text": tasks.TASKS[name]["text"], "arms": tasks.TASKS[name]["arms"], "scene": sim.object_states()}
 
     @app.get("/api/sim/view.jpg")
     async def sim_view_still(request: Request, yaw: float = 120.0, pitch: float = -15.0, distance: float = 1.9, height: float = 0.95):

@@ -12,28 +12,46 @@ import numpy as np
 
 DEFAULT_URL = "http://127.0.0.1:8080"
 GUIDE = """\
-robot is connected to the reBot teleop server. Units: metres, degrees.
-World frame: x forward toward the eyes, y to the robot's left, z up, origin at the foot of the post.
-Arms are named "left" and "right". Joints J1 to J6, gripper width 0 (closed) to 0.05 m (open).
+robot is connected to the reBot teleop server. Units: metres, degrees. Read docs/ROBOT_GUIDE.md for the full picture.
+World frame: x forward toward the eyes, y to the robot's left, z up, origin on the floor at the foot of the post.
+Arms are "left" (y > 0) and "right" (y < 0). Gripper width 0 (closed) to 0.05 m (open).
 
-robot.state()                          dict per arm: joints_deg, tip_xyz, tip_rotation, gripper_deg, ready, fault
-robot.joints(arm)                      six joint angles in degrees
-robot.tip(arm)                         gripper tip position [x, y, z] in metres
-robot.move_joints(arm, [j1..j6])       go to joint angles
-robot.move_tip(arm, [x, y, z])         put the tip at a point, keeping the hand orientation
-robot.move_tip_by(arm, [dx, dy, dz])   shift the tip relative to where it is now
-robot.move(left={...}, right={...})    move both arms together; each spec takes joints_deg, tip_xyz,
-                                       tip_delta, tip_rotation (3x3) and gripper_m
-robot.can_reach(arm, [x, y, z])        True or False, without moving
-robot.grip(arm, width_m)               open or close the gripper
-robot.say("raise left hand then wave") run plain words through the command parser
-robot.home()                           both arms back to their hanging home pose
-robot.stop()                           stop everything
-robot.snapshot(name, path)             save a JPEG from "left" or "right" wrist camera, or "overview" in sim
-robot.wait(seconds)
+State and motion
+robot.state()                            per arm: joints_deg, tip_xyz, tip_rotation, gripper_deg, ready, fault
+robot.tip(arm) / robot.joints(arm)       gripper tip position in metres / six joint angles in degrees
+robot.ready()                            both arms to the ready pose above the table, grippers open
+robot.home()                             both arms to the hanging home pose
+robot.move_tip(arm, xyz, rotation=None)  tip to a point; rotation is a 3x3 hand orientation, e.g. robot.top_down(arm, yaw)
+robot.move_tip_by(arm, [dx, dy, dz])     shift the tip relative to now
+robot.move_joints(arm, [j1..j6])         joint angles in degrees
+robot.move(left={...}, right={...})      both arms together; spec keys joints_deg, tip_xyz, tip_delta, tip_rotation, gripper_m
+robot.can_reach(arm, xyz, rotation=None) True or False without moving
+robot.grip(arm, width_m)                 open or close
+robot.top_down(arm, yaw_deg=0)           hand pointing straight down; fingers close along world x rotated by yaw
+robot.pick(arm, xyz, yaw_deg=0)          open, come down from above to xyz (object centre), close, lift 10 cm
+robot.place(arm, xyz, yaw_deg=0)         carry above xyz, lower until the held object's centre is at xyz, open, rise
+robot.say("raise left hand then wave")   plain word commands
+robot.stop()                             stop everything
 
-Every move is checked against joint limits, the floor and the keep out boxes around the post and head
-before anything moves. A refused move raises RobotError with the reason; nothing moves in that case.
+Seeing
+robot.capture(camera)                    (image HxWx3 uint8 RGB, info) for "left", "right" wrist cameras or "overview" (sim)
+                                         info has fx, fy, cx, cy, width, height, world_from_camera (4x4, OpenCV axes)
+robot.locate(camera, [(u, v), ...], plane_z=None)
+                                         world xyz for pixels of the last capture; depth in sim, else a plane at plane_z
+                                         (defaults to the table top)
+robot.find_color(image, "red")           blobs of red, green, blue or yellow, biggest first: uv, pixels, box
+robot.find_objects(camera, "red", z_range=(0.66, 0.80))
+                                         capture, find blobs and locate them in 3D, keeping those in the height range;
+                                         parts of the robot can match a colour, so filter by height
+robot.snapshot(camera, path)             save a JPEG
+
+Simulator only
+robot.objects()                          ground truth object positions; not allowed in camera only evaluations
+robot.task(name, seed)                   reset a benchmark task; returns its instructions
+robot.task_status()                      success and detail for the current task
+
+Every move is planned around the post, the head and the table, checked against joint limits and refused
+before anything moves if it cannot be done. A refused move raises RobotError with the reason.
 """
 
 
@@ -110,6 +128,9 @@ class Robot:
         if all(arm.get("ready") for arm in arms.values()):
             return
         if self.sim:
+            for name, arm in arms.items():
+                if arm.get("fault"):
+                    self.client.post("/api/reset", json={"arm": name})
             self.power_on()
             return
         raise RobotError("The real arms are not powered; the person at the robot must press Power on")
@@ -169,6 +190,93 @@ class Robot:
             Path(path).write_bytes(response.content)
             return str(path)
         return response.content
+
+    def ready(self):
+        return self.say("get ready then open grippers")
+
+    def top_down(self, arm, yaw_deg=0.0):
+        side = 1.0 if self._arm(arm) == "left" else -1.0
+        base = np.array([[0.0, -side, 0.0], [0.0, 0.0, side], [-1.0, 0.0, 0.0]])
+        turn = math.radians(float(yaw_deg))
+        spin = np.array([[math.cos(turn), -math.sin(turn), 0.0], [math.sin(turn), math.cos(turn), 0.0], [0.0, 0.0, 1.0]])
+        return spin @ base
+
+    def pick(self, arm, xyz, yaw_deg=0.0, approach=0.08, lift=0.10):
+        xyz = np.asarray(xyz, dtype=float)
+        rotation = self.top_down(arm, yaw_deg)
+        self.move(**{arm: {"tip_xyz": xyz + [0, 0, approach], "tip_rotation": rotation, "gripper_m": 0.05}})
+        self.move(**{arm: {"tip_xyz": xyz, "tip_rotation": rotation}}, speed_deg_s=15)
+        self.grip(arm, 0.0)
+        self.wait(0.4)
+        return self.move(**{arm: {"tip_xyz": xyz + [0, 0, lift], "tip_rotation": rotation}}, speed_deg_s=15)
+
+    def place(self, arm, xyz, yaw_deg=0.0, approach=0.08):
+        xyz = np.asarray(xyz, dtype=float)
+        rotation = self.top_down(arm, yaw_deg)
+        self.move(**{arm: {"tip_xyz": xyz + [0, 0, approach], "tip_rotation": rotation}})
+        self.move(**{arm: {"tip_xyz": xyz, "tip_rotation": rotation}}, speed_deg_s=15)
+        self.grip(arm, 0.05)
+        self.wait(0.3)
+        return self.move(**{arm: {"tip_xyz": xyz + [0, 0, approach], "tip_rotation": rotation}})
+
+    def capture(self, camera):
+        from PIL import Image
+        import base64
+        data = self._get(f"/api/camera/{camera}/capture")
+        image = np.array(Image.open(io.BytesIO(base64.b64decode(data.pop("image_jpeg_base64")))).convert("RGB"))
+        data["world_from_camera"] = np.array(data["world_from_camera"])
+        return image, data
+
+    def locate(self, camera, pixels, plane_z=None):
+        body = {"pixels": [[float(u), float(v)] for u, v in pixels]}
+        if plane_z is not None:
+            body["plane_z"] = float(plane_z)
+        return [point["xyz"] for point in self._post(f"/api/camera/{camera}/locate", body)["points"]]
+
+    @staticmethod
+    def find_color(image, color, min_pixels=12):
+        rgb = np.asarray(image, dtype=float)
+        r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
+        masks = {
+            "red": (r > 120) & (r > 1.8 * g) & (r > 1.8 * b),
+            "green": (g > 90) & (g > 1.4 * r) & (g > 1.4 * b),
+            "blue": (b > 90) & (b > 1.5 * r) & (b > 1.2 * g),
+            "yellow": (r > 140) & (g > 120) & (b < 0.5 * g),
+        }
+        if color not in masks:
+            raise RobotError(f"Colours are {', '.join(masks)}")
+        from scipy import ndimage
+        labels, count = ndimage.label(masks[color])
+        blobs = []
+        for index in range(1, count + 1):
+            rows, cols = np.nonzero(labels == index)
+            if rows.size >= min_pixels:
+                blobs.append({"uv": (float(cols.mean()), float(rows.mean())), "pixels": int(rows.size), "box": (int(cols.min()), int(rows.min()), int(cols.max()), int(rows.max()))})
+        return sorted(blobs, key=lambda blob: -blob["pixels"])
+
+    def find_objects(self, camera, color, z_range=None):
+        image, _ = self.capture(camera)
+        blobs = self.find_color(image, color)
+        if not blobs:
+            return []
+        points = self.locate(camera, [blob["uv"] for blob in blobs])
+        found = []
+        for blob, xyz in zip(blobs, points):
+            if z_range is None or z_range[0] <= xyz[2] <= z_range[1]:
+                found.append({**blob, "xyz": xyz})
+        return found
+
+    def objects(self):
+        if os.environ.get("REBOT_HIDE_OBJECTS") == "1":
+            raise RobotError("Ground truth objects are hidden in this evaluation; find objects with robot.capture and robot.locate")
+        return self._get("/api/sim/objects")
+
+    def task(self, name, seed=0):
+        self.ensure_ready()
+        return self._post("/api/sim/task", {"name": name, "seed": int(seed)})
+
+    def task_status(self):
+        return self._get("/api/sim/task")
 
     def wait(self, seconds):
         time.sleep(max(0.0, min(float(seconds), 60.0)))

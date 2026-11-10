@@ -6,9 +6,17 @@ from rebot_teleop.kinematics import mount_placement
 from rebot_teleop.sim import SimWorld
 
 
-def connect(url, code):
+def connect(url, code, wait=0.0):
     client = httpx.Client(base_url=url.rstrip("/"), timeout=10)
-    response = client.post("/api/session", json={"token": code} if code else {})
+    deadline = time.monotonic() + wait
+    while True:
+        try:
+            response = client.post("/api/session", json={"token": code} if code else {})
+            break
+        except httpx.HTTPError:
+            if time.monotonic() > deadline:
+                raise SystemExit(f"Cannot reach {url}")
+            time.sleep(1.0)
     if response.status_code >= 400:
         raise SystemExit(f"Pairing failed: {response.text}; pass --code with a pairing code from the robot computer")
     return client
@@ -19,8 +27,9 @@ def main():
     parser.add_argument("--url", default="http://127.0.0.1:8080", help="Address of the teleop server, for example the Jetson over Tailscale or the Cloudflare link")
     parser.add_argument("--code", default="", help="Pairing code from Show pairing code on the robot computer; not needed on the same machine")
     parser.add_argument("--rate", type=float, default=30.0)
+    parser.add_argument("--wait", type=float, default=0.0, help="Seconds to keep trying while the server starts")
     args = parser.parse_args()
-    client = connect(args.url, args.code)
+    client = connect(args.url, args.code, args.wait)
     state = client.get("/api/state").json()
     world = SimWorld(gui=True, heat=0.0)
     names = list(state["arms"])

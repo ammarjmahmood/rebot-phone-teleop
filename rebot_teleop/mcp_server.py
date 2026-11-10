@@ -9,14 +9,16 @@ from pathlib import Path
 from mcp.server.mcpserver import Image, MCPServer
 from rebot_teleop.agent import GUIDE, Robot, RobotError
 
+GUIDE_FILE = Path(__file__).resolve().parents[1] / "docs" / "ROBOT_GUIDE.md"
 INSTRUCTIONS = """\
-You control a two armed reBot robot (Seeed B601 RS arms on a post, phone eyes on top) through a teleop server,
-usually the PyBullet simulator. Work like Code as Policies: read the state, look through the cameras, then
-write a short Python policy that calls the robot API and run it with run_policy. Small single moves can use
-move_arm, set_gripper or say. Every move is checked against joint limits, the floor and the keep out boxes
-around the post and head before anything moves; a refused move explains why and nothing moves.
-Call robot_api once to see the full API. Look with look("overview") after moving to check the result.
+You control a two armed reBot robot (Seeed B601 RS arms on the sides of a post, phone eyes on top) through a
+teleop server, usually the PyBullet simulator. Work like Code as Policies: read the state, look through the
+cameras, then write a short Python policy against the robot API and run it with run_policy. Every move is planned
+around the post, head and table and checked before anything moves; a refused move explains why.
+Call robot_guide first: it explains the frames, what each joint does, where each arm can reach (the arms share
+no workspace) and the develop, freeze, evaluate loop for tasks.
 """ + GUIDE
+
 
 server = MCPServer("rebot", instructions=INSTRUCTIONS)
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -38,6 +40,66 @@ def report(value):
 @server.tool(description="Show the Python robot API that run_policy code can call, with units and the world frame")
 def robot_api() -> str:
     return GUIDE
+
+
+@server.tool(description="The full robot guide: body, world frame, poses, what each joint does, reach limits, cameras, tasks and safety rules. Read it before the first move")
+def robot_guide() -> str:
+    return GUIDE_FILE.read_text() if GUIDE_FILE.exists() else GUIDE
+
+
+@server.tool(description="List the simulator benchmark tasks with their instructions")
+def list_tasks() -> str:
+    try:
+        status = connect().task_status()
+        return report(status["tasks"])
+    except RobotError as error:
+        return f"Error: {error}"
+
+
+@server.tool(description="Reset a simulator task to a seeded layout (development seeds 0 to 99). Moves both arms to the ready pose and spawns the table and objects")
+def task_reset(name: str, seed: int = 0) -> str:
+    try:
+        return report(connect().task(name, seed))
+    except RobotError as error:
+        return f"Refused: {error}"
+
+
+@server.tool(description="Whether the current simulator task is solved, with a detail line")
+def task_status() -> str:
+    try:
+        status = connect().task_status()
+        status.pop("tasks", None)
+        return report(status)
+    except RobotError as error:
+        return f"Error: {error}"
+
+
+@server.tool(description="Simulator only: ground truth positions of the table and objects. Use while developing; evaluations hide it, so final policies must use cameras")
+def objects() -> str:
+    try:
+        return report(connect().objects())
+    except RobotError as error:
+        return f"Error: {error}"
+
+
+@server.tool(description="World xyz for pixels of the last picture from a camera (call look first). In the simulator it uses depth; on the real robot it intersects with a horizontal plane at plane_z, by default the table top")
+def locate(camera: str, pixels: list[list[float]], plane_z: float | None = None) -> str:
+    try:
+        return report(connect().locate(camera, [tuple(pixel) for pixel in pixels], plane_z))
+    except RobotError as error:
+        return f"Error: {error}"
+
+
+@server.tool(description="Freeze and evaluate a policy file: runs python -m rebot_teleop.dojo eval on evaluation seeds with ground truth hidden and returns the success rate")
+async def evaluate_policy(task: str, policy_path: str, seeds: str = "100-109") -> str:
+    current = connect()
+    env = os.environ.copy()
+    env.pop("REBOT_CODE", None)
+    if current.session:
+        env["REBOT_SESSION"] = current.session
+    process = await asyncio.create_subprocess_exec(sys.executable, "-m", "rebot_teleop.dojo", "eval", task, "--policy", policy_path, "--seeds", seeds, "--url", current.url, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env=env)
+    output, _ = await process.communicate()
+    return output.decode(errors="replace")[-6000:]
 
 
 @server.tool(description="Joint angles in degrees, gripper tip position in metres, readiness, faults and any simulated contacts for every arm")
@@ -92,16 +154,16 @@ def stop() -> str:
         return f"Error: {error}"
 
 
-@server.tool(description="Look through a camera: 'left' or 'right' wrist camera, or 'overview' for a view of the whole simulated robot. yaw and pitch in degrees turn the overview camera around the robot: yaw 90 looks at the face, 180 at the left side, 0 at the right side, 270 at the back; pitch -80 looks from above")
+@server.tool(description="Look through a camera and keep the picture for locate: 'left' or 'right' wrist camera, or 'overview' for a view of the whole simulated robot. yaw and pitch in degrees turn the overview camera around the robot: yaw 90 looks at the face, 180 at the left side, 0 at the right side, 270 at the back; pitch -80 looks from above. Overview pictures are 640x480, wrist pictures 320x240 in the simulator")
 def look(camera: str = "overview", yaw: float = 120.0, pitch: float = -15.0, distance: float = 1.9) -> Image | str:
     try:
         current = connect()
-        if camera == "overview":
-            response = current.client.get("/api/sim/view.jpg", params={"yaw": yaw, "pitch": pitch, "distance": distance})
-            if response.status_code >= 400:
-                return f"No overview: {response.text}"
-            return Image(data=response.content, format="jpeg")
-        return Image(data=current.snapshot(camera), format="jpeg")
+        params = {"yaw": yaw, "pitch": pitch, "distance": distance} if camera == "overview" else {}
+        response = current.client.get(f"/api/camera/{camera}/capture", params=params)
+        if response.status_code >= 400:
+            return f"No picture: {response.text}"
+        import base64
+        return Image(data=base64.b64decode(response.json()["image_jpeg_base64"]), format="jpeg")
     except RobotError as error:
         return f"Error: {error}"
 

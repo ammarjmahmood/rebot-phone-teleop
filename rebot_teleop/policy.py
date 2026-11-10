@@ -29,7 +29,7 @@ DIRECTIONS = {
     "out": "out", "outward": "out", "outwards": "out", "away": "out", "apart": "out", "wider": "out",
     "in": "in", "inward": "in", "inwards": "in", "closer": "in", "together": "in",
 }
-HELP = "Try: raise left hand, lower hands, raise elbows, bend right elbow, straighten elbows, raise wrists, turn wrists out, twist left wrist clockwise, move hands forward 5 cm, open grippers, close right gripper, joint 3 by 10, wave, go home"
+HELP = "Try: get ready, raise left hand, lower hands, raise elbows, bend right elbow, straighten elbows, raise wrists, turn wrists out, twist left wrist clockwise, move hands forward 5 cm, open grippers, close right gripper, joint 3 by 10, wave, go home"
 
 
 class CommandError(ValueError):
@@ -198,6 +198,11 @@ def single(view, q, text, words):
     verbs = set(words)
     if verbs & {"home", "rest", "starting", "start"}:
         return view.home.copy(), None, f"{view.name} home"
+    if "ready" in verbs:
+        from rebot_teleop.tasks import READY_DEG
+        if view.name not in READY_DEG:
+            raise CommandError(f"No ready pose for {view.name}")
+        return np.radians(READY_DEG[view.name]), None, f"{view.name} ready"
     if re.search(r"\b(?:j|joint)\s*[1-6]\b", text):
         goal, note = joint_move(view, q, text)
         return goal, None, note

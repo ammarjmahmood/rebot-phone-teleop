@@ -30,7 +30,7 @@ dependencies = [
 test = ["pytest==8.4.2", "httpx==0.28.1"]
 sim = ["pybullet==3.2.7", "httpx==0.28.1", "pillow==13.0.0"]
 camera = ["opencv-python-headless==4.10.0.84"]
-agent = ["mcp==2.3.0", "httpx==0.28.1"]
+agent = ["mcp==2.3.0", "httpx==0.28.1", "pillow==13.0.0", "scipy==1.16.3"]
 
 [project.scripts]
 rebot-teleop = "rebot_teleop.__main__:main"

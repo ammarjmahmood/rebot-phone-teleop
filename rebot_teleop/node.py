@@ -49,8 +49,8 @@ class TeleopNode:
         self.mount = mount_for(name, self.settings)
         self.kin = Kinematics(ASSETS / "rebot_rs.urdf", mount_placement(**self.mount) if self.mount else None)
         self.home_q = np.radians(home_for(name, self.settings))
-        if self.mount and self.mount == MOUNTS.get(name):
-            self.kin.keep_out = KEEP_OUT
+        self.base_keep_out = list(KEEP_OUT) if self.mount and self.mount == MOUNTS.get(name) else []
+        self.kin.keep_out = list(self.base_keep_out)
         self.arm = arm or RSArm(channel, controller_factory=controller_factory, gripper_open_deg=270.0, gravity=self.kin.gravity_function())
         self.kin.lower = self.arm.lower.copy()
         self.kin.upper = self.arm.upper.copy()
@@ -182,6 +182,9 @@ class TeleopNode:
             raise ValueError(f"Joint {joint + 1} is {math.degrees(excess[joint]):.1f} degrees past its limit; check the zero calibration in MotorBridge Studio")
         return np.clip(start, self.kin.lower, self.kin.upper)
 
+    def set_obstacles(self, boxes):
+        self.kin.keep_out = list(self.base_keep_out) + list(boxes)
+
     async def home(self):
         return await self.move_to(self.home_q, reason="Homing")
 
@@ -190,7 +193,17 @@ class TeleopNode:
         await self.stop(reason)
         self.fault = None
         generation = self.generation
-        samples = self.kin.trajectory(self.planning_start(), np.asarray(goal, dtype=float), speed, HOME_ACCELERATION)
+        start = self.planning_start()
+        waypoints = await asyncio.to_thread(self.kin.route, start, np.asarray(goal, dtype=float))
+        if generation != self.generation:
+            return False
+        samples = []
+        offset = 0.0
+        for point in waypoints:
+            segment = self.kin.trajectory(start, point, speed, HOME_ACCELERATION)
+            samples.extend((offset + at, q) for at, q in (segment if not samples else segment[1:]))
+            offset = samples[-1][0]
+            start = point
 
         async def run():
             self.arm.enabled = True
@@ -211,8 +224,13 @@ class TeleopNode:
             return generation == self.generation
 
         self.motion = asyncio.create_task(run())
+        motion = self.motion
         try:
-            return await self.motion
+            return await motion
+        except asyncio.CancelledError:
+            if motion.cancelled() and not asyncio.current_task().cancelling():
+                return False
+            raise
         except ValueError as error:
             self.arm.stop()
             self.fault = str(error)

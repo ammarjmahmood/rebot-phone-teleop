@@ -1,4 +1,5 @@
 import math
+import time
 from pathlib import Path
 import numpy as np
 import pinocchio as pin
@@ -31,17 +32,24 @@ class Kinematics:
         self.keep_out = []
         self.clearance = 0.035
 
-    def clear_of(self, points):
+    def clear_of(self, points, strict=False):
         if not self.keep_out:
             return None
         chain = points[3:]
         samples = [chain[0]]
-        for a, b in zip(chain[:-1], chain[1:]):
+        fingers = []
+        for index, (a, b) in enumerate(zip(chain[:-1], chain[1:])):
+            last = index == len(chain) - 2
             for u in (0.25, 0.5, 0.75, 1.0):
-                samples.append(a + (b - a) * u)
-        for name, center, half in self.keep_out:
+                (fingers if last and u >= 0.5 else samples).append(a + (b - a) * u)
+        for box in self.keep_out:
+            name, center, half = box[:3]
+            near = box[3] if len(box) > 3 and not strict else self.clearance
             gap = np.maximum(np.abs(np.asarray(samples) - center) - half, 0.0)
             if np.min(np.linalg.norm(gap, axis=1)) < self.clearance:
+                return name
+            gap = np.maximum(np.abs(np.asarray(fingers) - center) - half, 0.0)
+            if np.min(np.linalg.norm(gap, axis=1)) < near:
                 return name
         return None
 
@@ -56,6 +64,12 @@ class Kinematics:
         frame = data.oMf[self.tip]
         return frame.translation.copy(), frame.rotation.copy()
 
+    def frame_pose(self, name, q):
+        data = self.model.createData()
+        pin.framesForwardKinematics(self.model, data, self.configuration(q))
+        frame = data.oMf[self.model.getFrameId(name)]
+        return frame.translation.copy(), frame.rotation.copy()
+
     def points(self, q):
         data = self.model.createData()
         pin.framesForwardKinematics(self.model, data, self.configuration(q))
@@ -65,7 +79,7 @@ class Kinematics:
         points.append(data.oMf[self.tip].translation.copy())
         return np.array(points)
 
-    def validate(self, q, min_z=-0.05, max_radius=0.8):
+    def validate(self, q, min_z=-0.05, max_radius=0.8, strict=False):
         q = np.asarray(q, dtype=float)
         if q.shape != (6,) or not np.isfinite(q).all():
             raise ValueError("Six finite joint positions are required")
@@ -79,7 +93,7 @@ class Kinematics:
             raise ValueError("Workspace boundary reached")
         if np.any(np.linalg.norm(local[:, :2], axis=1) > max_radius):
             raise ValueError("Workspace boundary reached")
-        hit = self.clear_of(points)
+        hit = self.clear_of(points, strict)
         if hit:
             raise ValueError(f"The arm would hit the {hit}")
 
@@ -102,6 +116,49 @@ class Kinematics:
         pin.framesForwardKinematics(self.model, data, q)
         residual = float(np.linalg.norm(target.translation - data.oMf[self.tip].translation))
         return q[self.indices].copy(), residual
+
+    def segment_clear(self, start, goal, step_deg=2.0, strict=(1.0, 0.0)):
+        start = np.asarray(start, dtype=float)
+        goal = np.asarray(goal, dtype=float)
+        count = max(4, int(math.ceil(np.max(np.abs(goal - start)) / math.radians(step_deg))))
+        for u in np.linspace(0.0, 1.0, count + 1)[1:]:
+            try:
+                self.validate(start + (goal - start) * u, strict=strict[0] <= u <= strict[1])
+            except ValueError as error:
+                return str(error)
+        return None
+
+    def route(self, start, goal, budget_s=1.5, seed=0):
+        start = np.asarray(start, dtype=float)
+        goal = np.asarray(goal, dtype=float)
+        self.validate(goal)
+        blocked = self.segment_clear(start, goal)
+        if blocked is None:
+            return [goal]
+        rng = np.random.default_rng(seed)
+        middle = (start + goal) / 2
+        spread = np.maximum(np.abs(goal - start), math.radians(30.0))
+        best = None
+        deadline = time.monotonic() + budget_s
+        attempt = 0
+        while time.monotonic() < deadline:
+            attempt += 1
+            scale = min(2.0, 0.5 + attempt / 200)
+            mid = np.clip(middle + rng.normal(0.0, 1.0, 6) * spread * scale, self.lower + 0.02, self.upper - 0.02)
+            length = np.max(np.abs(mid - start)) + np.max(np.abs(goal - mid))
+            if best is not None and length >= best[0]:
+                continue
+            first = (0.3, 1.0)
+            second = (0.0, 0.7)
+            if self.segment_clear(start, mid, 8.0, first) or self.segment_clear(mid, goal, 8.0, second):
+                continue
+            if self.segment_clear(start, mid, 2.0, first) is None and self.segment_clear(mid, goal, 2.0, second) is None:
+                best = (length, mid)
+                if attempt > 60:
+                    break
+        if best is None:
+            raise ValueError(f"No collision free path found; the straight path fails with: {blocked}")
+        return [best[1], goal]
 
     def trajectory(self, start, goal, speed, acceleration, dt=0.02):
         start = np.asarray(start, dtype=float)

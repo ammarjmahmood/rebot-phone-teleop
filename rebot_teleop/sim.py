@@ -1,6 +1,7 @@
 import json
 import math
 import os
+import pkgutil
 import re
 import tempfile
 import threading
@@ -32,6 +33,16 @@ CAMERA_EVERY_S = 0.1
 CAMERA_IDLE_S = 3.0
 VIEW_SIZE = (640, 480)
 VIEW_EVERY_S = 0.066
+
+
+def camera_geometry(view, fov_vertical_deg, width, height, depth, near, far):
+    gl_from_world = np.asarray(view, dtype=float).reshape(4, 4).T
+    world_from_gl = np.linalg.inv(gl_from_world)
+    world_from_camera = world_from_gl.copy()
+    world_from_camera[:3, :3] = world_from_gl[:3, :3] @ np.diag([1.0, -1.0, -1.0])
+    focal = (height / 2) / math.tan(math.radians(fov_vertical_deg) / 2)
+    metres = far * near / (far - (far - near) * depth)
+    return {"width": width, "height": height, "fx": focal, "fy": focal, "cx": width / 2, "cy": height / 2, "world_from_camera": world_from_camera, "depth_m": metres}
 
 
 def find_meshes():
@@ -137,6 +148,11 @@ class SimWorld:
         self.view_wanted = 0.0
         self.view_at = 0.0
         self.view = None
+        self.scene_requests = []
+        self.scene_bodies = []
+        self.table_body = None
+        self.objects = {}
+        self.table = None
 
     def add_arm(self, channel, mount, start=None):
         with self.lock:
@@ -167,6 +183,16 @@ class SimWorld:
 
     def _setup(self, p):
         self.client = p.connect(p.GUI if self.gui else p.DIRECT)
+        self.renderer = p.ER_BULLET_HARDWARE_OPENGL if self.gui else p.ER_TINY_RENDERER
+        self.render_note = "window" if self.gui else "cpu"
+        if not self.gui and os.environ.get("REBOT_SIM_EGL", "1") == "1":
+            try:
+                egl = pkgutil.get_loader("eglRenderer")
+                if egl and p.loadPlugin(egl.get_filename(), "_eglRendererPlugin") >= 0:
+                    self.renderer = p.ER_BULLET_HARDWARE_OPENGL
+                    self.render_note = "gpu"
+            except Exception:
+                pass
         p.setGravity(0, 0, -9.81)
         p.setTimeStep(self.dt)
         p.setPhysicsEngineParameter(numSolverIterations=50)
@@ -209,6 +235,8 @@ class SimWorld:
             p.setCollisionFilterPair(arm.body, self.post, link, -1, 0)
         for joint, value in zip(arm.joints, arm.start):
             p.resetJointState(arm.body, joint, float(value))
+        for link in arm.fingers:
+            p.changeDynamics(arm.body, link, lateralFriction=2.0, spinningFriction=0.01, frictionAnchor=1)
         arm.label = None
 
     def _run(self):
@@ -231,6 +259,14 @@ class SimWorld:
                     self.error = f"Simulator could not load arm {arm.channel}: {error}"
                     with self.lock:
                         self.arms.pop(arm.channel, None)
+            with self.lock:
+                requests, self.scene_requests = self.scene_requests, []
+            for spec, done in requests:
+                try:
+                    self._build_scene(p, spec)
+                except Exception as error:
+                    done.error = str(error)
+                done.set()
             if pending:
                 self.ready.set()
             elif not self.arms:
@@ -251,6 +287,8 @@ class SimWorld:
                     for arm in self.arms.values():
                         if arm.body is not None:
                             self._track_tip(p, arm)
+                    self._track_objects(p)
+                self._apply_poses(p)
             if tick % 50 == 0:
                 self._check_contacts(p)
             if self.gui and tick % 250 == 0:
@@ -316,6 +354,11 @@ class SimWorld:
                 other = contact[2]
                 if other == arm.body:
                     continue
+                if other == self.table_body:
+                    found.append((arm.channel, contact[3], "table"))
+                    continue
+                if other in self.scene_bodies:
+                    continue
                 what = "post" if other == self.post else "head" if other in self.body_parts else next((f"arm {o.channel}" for o in bodies if o.body == other), "floor")
                 found.append((arm.channel, contact[3], what))
         with self.lock:
@@ -345,11 +388,13 @@ class SimWorld:
             view = p.computeViewMatrix(eye.tolist(), (eye + rotation[:, 2]).tolist(), (-rotation[:, 0]).tolist())
             width, height = CAMERA_SIZE
             projection = p.computeProjectionMatrixFOV(CAMERA_FOV_DEG * height / width, width / height, 0.01, 4.0)
-            renderer = p.ER_BULLET_HARDWARE_OPENGL if self.gui else p.ER_TINY_RENDERER
+            renderer = self.renderer
             image = p.getCameraImage(width, height, view, projection, renderer=renderer)
             pixels = np.reshape(np.asarray(image[2], dtype=np.uint8), (height, width, 4))[:, :, :3].copy()
+            geometry = camera_geometry(view, CAMERA_FOV_DEG * height / width, width, height, np.reshape(np.asarray(image[3], dtype=np.float32), (height, width)), 0.01, 4.0)
             with self.lock:
                 arm.frame = (now, pixels)
+                arm.geometry = geometry
                 arm.camera_at = now
 
     def _overview(self, p, now):
@@ -360,11 +405,13 @@ class SimWorld:
         view = p.computeViewMatrixFromYawPitchRoll([0.0, 0.0, height], distance, yaw, pitch, 0.0, 2)
         width, tall = VIEW_SIZE
         projection = p.computeProjectionMatrixFOV(50.0, width / tall, 0.05, 10.0)
-        renderer = p.ER_BULLET_HARDWARE_OPENGL if self.gui else p.ER_TINY_RENDERER
+        renderer = self.renderer
         image = p.getCameraImage(width, tall, view, projection, renderer=renderer)
         pixels = np.reshape(np.asarray(image[2], dtype=np.uint8), (tall, width, 4))[:, :, :3].copy()
+        geometry = camera_geometry(view, 50.0, width, tall, np.reshape(np.asarray(image[3], dtype=np.float32), (tall, width)), 0.05, 10.0)
         with self.lock:
             self.view = (now, params, pixels)
+            self.view_geometry = geometry
             self.view_at = now
 
     def overview_frame(self, yaw, pitch, distance, height):
@@ -375,6 +422,123 @@ class SimWorld:
             if self.view and self.view[1] == params:
                 return self.view[0], self.view[2]
             return None
+
+    def set_scene(self, spec, timeout=10.0):
+        self.start()
+        done = threading.Event()
+        done.error = None
+        with self.lock:
+            self.scene_requests.append((spec, done))
+        if not done.wait(timeout):
+            raise RuntimeError("The simulator did not build the scene")
+        if done.error:
+            raise ValueError(done.error)
+        return self.object_states()
+
+    def _build_scene(self, p, spec):
+        for body in self.scene_bodies:
+            if self.gui:
+                self.parked = getattr(self, "parked", 0) + 1
+                p.resetBasePositionAndOrientation(body, [50.0 + self.parked, 50.0, -5.0], [0, 0, 0, 1])
+                p.setCollisionFilterGroupMask(body, -1, 0, 0)
+            else:
+                p.removeBody(body)
+        self.scene_bodies = []
+        self.table_body = None
+        objects = {}
+        table = spec.get("table")
+        if table:
+            half = [(table["x"][1] - table["x"][0]) / 2, (table["y"][1] - table["y"][0]) / 2, table["top"] / 2]
+            center = [(table["x"][0] + table["x"][1]) / 2, (table["y"][0] + table["y"][1]) / 2, table["top"] / 2]
+            body = p.createMultiBody(0, p.createCollisionShape(p.GEOM_BOX, halfExtents=half), p.createVisualShape(p.GEOM_BOX, halfExtents=half, rgbaColor=[0.78, 0.66, 0.5, 1]), center)
+            p.changeDynamics(body, -1, lateralFriction=0.8)
+            self.scene_bodies.append(body)
+            self.table_body = body
+        for item in spec.get("objects", []):
+            color = list(item.get("rgba", [0.8, 0.1, 0.1, 1.0]))
+            orientation = p.getQuaternionFromEuler([0.0, 0.0, math.radians(item.get("yaw_deg", 0.0))])
+            if item["kind"] == "block":
+                half = [item["size"] / 2] * 3
+                body = p.createMultiBody(item.get("mass", 0.04), p.createCollisionShape(p.GEOM_BOX, halfExtents=half), p.createVisualShape(p.GEOM_BOX, halfExtents=half, rgbaColor=color), item["xyz"], orientation)
+            elif item["kind"] == "bin":
+                inner, wall, height = item["size"], item.get("wall", 0.006), item.get("height", 0.05)
+                outer = inner / 2 + wall
+                parts = [([outer, outer, wall / 2], [0, 0, wall / 2])]
+                for sx, sy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    extent = [wall / 2, outer, height / 2] if sx else [outer, wall / 2, height / 2]
+                    parts.append((extent, [sx * (inner / 2 + wall / 2), sy * (inner / 2 + wall / 2), height / 2]))
+                shapes = [p.GEOM_BOX] * len(parts)
+                collision = p.createCollisionShapeArray(shapes, halfExtents=[e for e, _ in parts], collisionFramePositions=[c for _, c in parts])
+                visual = p.createVisualShapeArray(shapes, halfExtents=[e for e, _ in parts], visualFramePositions=[c for _, c in parts], rgbaColors=[color] * len(parts))
+                body = p.createMultiBody(item.get("mass", 0.3), collision, visual, item["xyz"], orientation)
+            else:
+                raise ValueError(f"Unknown object kind {item['kind']}")
+            p.changeDynamics(body, -1, lateralFriction=1.2, spinningFriction=0.005, rollingFriction=0.0005)
+            self.scene_bodies.append(body)
+            objects[item["name"]] = {"body": body, "spec": dict(item)}
+        with self.lock:
+            self.objects = objects
+            self.table = dict(table) if table else None
+            self.scene_spec = spec
+        self._track_objects(p)
+
+    def _track_objects(self, p):
+        if not self.objects:
+            return
+        poses = {}
+        for name, item in self.objects.items():
+            position, orientation = p.getBasePositionAndOrientation(item["body"])
+            poses[name] = (np.array(position), math.degrees(p.getEulerFromQuaternion(orientation)[2]), np.array(p.getMatrixFromQuaternion(orientation)).reshape(3, 3), list(orientation))
+        with self.lock:
+            for name, pose in poses.items():
+                if name in self.objects:
+                    self.objects[name]["pose"] = pose
+
+    def scene_snapshot(self):
+        with self.lock:
+            poses = {name: [[float(v) for v in item["pose"][0]], item["pose"][3]] for name, item in self.objects.items() if "pose" in item}
+            return {"spec": getattr(self, "scene_spec", {}), "poses": poses}
+
+    def set_object_poses(self, poses):
+        with self.lock:
+            self.pose_requests = dict(poses)
+
+    def _apply_poses(self, p):
+        with self.lock:
+            poses, self.pose_requests = getattr(self, "pose_requests", None), None
+        if not poses:
+            return
+        for name, (position, orientation) in poses.items():
+            item = self.objects.get(name)
+            if item:
+                p.resetBasePositionAndOrientation(item["body"], position, orientation)
+
+    def object_states(self):
+        with self.lock:
+            result = {}
+            for name, item in self.objects.items():
+                spec = item["spec"]
+                position, yaw, rotation = item.get("pose", (np.array(spec["xyz"]), spec.get("yaw_deg", 0.0), np.eye(3), None))[:3]
+                result[name] = {"kind": spec["kind"], "color": spec.get("color", ""), "size_m": spec["size"], "xyz": [round(float(v), 4) for v in position], "yaw_deg": round(float(yaw), 1), "upright": bool(rotation[2, 2] > 0.9)}
+            return {"table": self.table, "objects": result}
+
+    def camera_geometry(self, channel):
+        with self.lock:
+            if channel == "overview":
+                return getattr(self, "view_geometry", None)
+            return getattr(self.arms[channel], "geometry", None)
+
+    def camera_capture(self, channel):
+        with self.lock:
+            if channel == "overview":
+                if not self.view:
+                    return None
+                return self.view[0], self.view[2], getattr(self, "view_geometry", None)
+            arm = self.arms[channel]
+            arm.camera_wanted = time.monotonic()
+            if not arm.frame:
+                return None
+            return arm.frame[0], arm.frame[1], getattr(arm, "geometry", None)
 
     def camera_frame(self, channel):
         with self.lock:

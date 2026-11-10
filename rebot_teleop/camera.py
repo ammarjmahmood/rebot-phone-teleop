@@ -1,6 +1,8 @@
 import io
+import math
 import threading
 import time
+import numpy as np
 
 
 class UsbCamera:
@@ -133,3 +135,74 @@ class SimView:
             self.jpeg = buffer.getvalue()
             self.encoded_at = at
         return self.jpeg
+
+
+def encode(pixels, quality):
+    from PIL import Image
+    buffer = io.BytesIO()
+    Image.fromarray(pixels).save(buffer, format="JPEG", quality=quality)
+    return buffer.getvalue()
+
+
+def lens(width, height, fov_horizontal_deg):
+    focal = (width / 2) / math.tan(math.radians(fov_horizontal_deg) / 2)
+    return {"width": width, "height": height, "fx": focal, "fy": focal, "cx": width / 2, "cy": height / 2}
+
+
+def optical_pose(position, rotation, offset=0.021):
+    forward = rotation[:, 2]
+    down = rotation[:, 0]
+    right = np.cross(down, forward)
+    pose = np.eye(4)
+    pose[:3, :3] = np.column_stack([right, down, forward])
+    pose[:3, 3] = position + forward * offset
+    return pose
+
+
+def sim_capture(world, channel, quality=85, view=None):
+    after = time.monotonic()
+    for _ in range(80):
+        if view is not None:
+            world.overview_frame(*view)
+        latest = world.camera_capture(channel)
+        if latest and latest[2] is not None and latest[0] >= after:
+            at, pixels, geometry = latest
+            info = {key: geometry[key] for key in ("width", "height", "fx", "fy", "cx", "cy")}
+            return {"jpeg": encode(pixels, quality), "info": info, "world_from_camera": geometry["world_from_camera"], "depth_m": geometry["depth_m"], "at": at}
+        time.sleep(0.05)
+    return None
+
+
+def usb_capture(camera, pose, fov_horizontal_deg):
+    jpeg = camera.frame()
+    if jpeg is None:
+        return None
+    from PIL import Image
+    width, height = Image.open(io.BytesIO(jpeg)).size
+    return {"jpeg": jpeg, "info": lens(width, height, fov_horizontal_deg), "world_from_camera": pose, "depth_m": None, "at": time.monotonic()}
+
+
+def locate(capture, pixels, plane_z=None):
+    info = capture["info"]
+    pose = np.asarray(capture["world_from_camera"], dtype=float)
+    points = []
+    for u, v in pixels:
+        u = float(u)
+        v = float(v)
+        if not (0 <= u < info["width"] and 0 <= v < info["height"]):
+            raise ValueError(f"Pixel {u:.0f},{v:.0f} is outside the {info['width']}x{info['height']} image")
+        ray = np.array([(u + 0.5 - info["cx"]) / info["fx"], (v + 0.5 - info["cy"]) / info["fy"], 1.0])
+        if capture.get("depth_m") is not None and plane_z is None:
+            depth = float(capture["depth_m"][int(v), int(u)])
+            points.append({"xyz": (pose[:3, :3] @ (ray * depth) + pose[:3, 3]).round(4).tolist(), "method": "depth", "distance_m": round(depth, 4)})
+            continue
+        if plane_z is None:
+            raise ValueError("This camera has no depth; pass plane_z, the height of the surface the point lies on")
+        direction = pose[:3, :3] @ ray
+        if abs(direction[2]) < 1e-6:
+            raise ValueError("That pixel looks parallel to the plane")
+        t = (float(plane_z) - pose[2, 3]) / direction[2]
+        if t <= 0:
+            raise ValueError("The plane is behind the camera for that pixel")
+        points.append({"xyz": (pose[:3, 3] + direction * t).round(4).tolist(), "method": "plane", "distance_m": round(float(t * np.linalg.norm(direction)), 4)})
+    return points

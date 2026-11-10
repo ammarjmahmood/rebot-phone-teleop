@@ -1,6 +1,8 @@
 import argparse
 import asyncio
+import faulthandler
 import os
+import signal
 from pathlib import Path
 import uvicorn
 
@@ -37,7 +39,18 @@ def describe_can():
     return rows or ["No CAN interfaces found"]
 
 
+def open_dashboard(url):
+    import webbrowser
+    try:
+        webbrowser.open(url)
+    except Exception:
+        pass
+    print("Simulation view:", url, flush=True)
+
+
 def main():
+    if hasattr(signal, "SIGUSR1"):
+        faulthandler.register(signal.SIGUSR1, all_threads=True)
     parser = argparse.ArgumentParser(description="Phone, HEBI and Quest teleoperation for the Seeed reBot B601 RS arm")
     parser.add_argument("--can", default="auto", help="SocketCAN interface connected to the arm; auto picks the PEAK USB adapter")
     parser.add_argument("--arm", action="append", default=[], metavar="NAME=IFACE", help="Add an arm, for example --arm left=can1 --arm right=can2; names left and right map to the Quest hands")
@@ -113,6 +126,8 @@ def main():
     async def serve():
         servers = [uvicorn.Server(config) for config in configs]
         tasks = [asyncio.create_task(server.serve()) for server in servers]
+        if args.sim == "gui":
+            asyncio.get_running_loop().call_later(4.0, open_dashboard, f"http://127.0.0.1:{args.port}/")
         await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for server in servers:
             server.should_exit = True
