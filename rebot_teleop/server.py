@@ -23,10 +23,7 @@ import numpy as np
 from rebot_teleop import policy
 from rebot_teleop import tasks
 from rebot_teleop.agent import Robot
-try:
-    from rebot_teleop import cap
-except ImportError:
-    cap = None
+from rebot_teleop import cap
 from rebot_teleop.camera import SimCamera, SimView, UsbCamera, locate, optical_pose, sim_capture, usb_capture
 from fastapi.staticfiles import StaticFiles
 from rebot_teleop.auth import Auth, pairing_ttl
@@ -823,12 +820,10 @@ def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, heb
 
     def cap_view(after=0):
         state = app.state.cap
-        if cap is None:
-            return {"running": False, "events": [], "next": 0, "missing": "The anthropic package is not installed on this computer: pip install anthropic==2.7.0", "key": False, "default_model": "claude-fable-5-2", "efforts": ["low", "medium", "high", "xhigh", "max"]}
         return {
             "running": state["running"], "instruction": state["instruction"], "model": state["model"], "effort": state["effort"],
             "result": state["result"], "saved": state["saved"], "events": state["events"][after:], "next": len(state["events"]),
-            "key": bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN") or auth.values.get("ANTHROPIC_API_KEY")),
+            "key": bool(shutil.which("claude") or (Path.home() / ".local" / "bin" / "claude").exists()),
             "default_model": cap.DEFAULT_MODEL, "efforts": cap.EFFORTS,
         }
 
@@ -842,8 +837,6 @@ def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, heb
         device(request)
         body = await body_of(request)
         state = app.state.cap
-        if cap is None:
-            raise ValueError("The anthropic package is not installed on this computer: pip install anthropic==2.7.0")
         if state["running"]:
             raise ValueError("A policy is already running; stop it first")
         instruction = str(body.get("instruction", "")).strip()
@@ -855,8 +848,8 @@ def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, heb
             raise ValueError("That model name does not look right")
         if effort not in cap.EFFORTS:
             raise ValueError("Choose an effort: " + ", ".join(cap.EFFORTS))
-        if not cap.load_key(values=auth.values):
-            raise ValueError("No Anthropic API key. Put ANTHROPIC_API_KEY=... in the .env file in the data folder on this computer and press Run again")
+        if not (shutil.which("claude") or (Path.home() / ".local" / "bin" / "claude").exists()):
+            raise ValueError("The claude CLI is not installed on this computer")
         events = []
         state.update(running=True, instruction=instruction, model=model, effort=effort, result=None, saved=None, events=events)
 
@@ -868,7 +861,7 @@ def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, heb
             try:
                 robot = Robot(f"http://127.0.0.1:{port}")
                 robot.ensure_ready()
-                run = cap.Run(robot, instruction, model, effort, emit=emit)
+                run = cap.CliRun(f"http://127.0.0.1:{port}", instruction, model, effort, emit=emit)
                 state["run"] = run
                 ok = run.run()
                 saved = run.save()
@@ -887,7 +880,7 @@ def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, heb
         device(request)
         run = app.state.cap.get("run")
         if run is not None:
-            run.cancel.set()
+            run.stop()
         for current in nodes(request).values():
             for controller in current.controllers.values():
                 await controller.stop("Stop pressed", keep_source=True)

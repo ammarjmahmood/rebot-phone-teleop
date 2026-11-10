@@ -66,7 +66,7 @@ function show(view) {
   state.textContent = running ? 'Running' : view.result === 'done' ? 'Done' + (view.saved ? `, saved ${view.saved}` : '') : view.result === 'failed' ? 'Stopped or failed' + (view.saved ? `, saved ${view.saved}` : '') : '';
   const notice = $('notice');
   notice.hidden = !(view.missing || !view.key);
-  notice.textContent = view.missing || 'No Anthropic API key on the arm computer yet. Add a line ANTHROPIC_API_KEY=... to the .env file in its data folder (~/.rebot-teleop/.env), then press Run.';
+  notice.textContent = view.missing || 'The claude CLI is not installed on the arm computer. Install Claude Code there and sign in once, then press Run.';
   for (const event of view.events || []) render(event);
   if (view.next !== undefined) next = view.next;
 }

@@ -1,12 +1,12 @@
 import argparse
 import json
 import os
+import shutil
+import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
-
-import anthropic
 
 from rebot_teleop.agent import GUIDE, Robot, RobotError, run_policy
 
@@ -91,6 +91,7 @@ def tail(text, limit=OUTPUT_LIMIT):
 
 
 def request(client, model, effort, messages, system):
+    import anthropic
     options = dict(
         model=model,
         max_tokens=64000,
@@ -152,6 +153,7 @@ class Run:
         return [{"type": "text", "text": f"Unknown tool {name}"}], True
 
     def run(self):
+        import anthropic
         client = self.client or anthropic.Anthropic()
         system = system_prompt()
         messages = [{"role": "user", "content": self.instruction}]
@@ -208,6 +210,126 @@ class Run:
         header = f"# Code as policy by {self.model}: {self.instruction}\n# Run again with: python -m rebot_teleop.agent {path}\n"
         path.write_text(header + "\n\n# next step\n".join(self.scripts) + "\n")
         return path
+
+
+CLI_PROMPT = """You drive a two arm robot through the rebot tools, Code as Policies style. The arms start in the pose the operator left them in: plan every move from that pose, and never send them home, to ready or to any preset pose unless the task asks for it. Before moving, call robot_guide if you have not, read the state and look through the wrist cameras; navigate by what the cameras show, looking again after each step. Write short Python policies against the robot API, run them with run_policy, and keep moves small and slow. When the task is done, or cannot be done, stop and reply with a short summary of what happened."""
+
+
+def clean_env():
+    env = {key: value for key, value in os.environ.items() if not key.startswith(("CLAUDE", "ANTHROPIC_"))}
+    env.pop("REBOT_CODE", None)
+    return env
+
+
+class CliRun:
+    def __init__(self, url, instruction, model=DEFAULT_MODEL, effort="high", max_turns=40, emit=None):
+        self.url = url
+        self.instruction = instruction
+        self.model = model
+        self.effort = effort
+        self.max_turns = max_turns
+        self.emit = emit or (lambda kind, text, **extra: None)
+        self.cancel = threading.Event()
+        self.process = None
+        self.scripts = []
+        self.pending = {}
+        self.summary = ""
+        self.sim = True
+
+    def command(self):
+        claude = shutil.which("claude") or str(Path.home() / ".local" / "bin" / "claude")
+        config = {"mcpServers": {"rebot": {"command": "bash", "args": [str(ROOT / "scripts" / "rebot_mcp.sh")], "env": {"REBOT_URL": self.url}}}}
+        return [
+            claude, "-p", self.instruction, "--model", self.model, "--effort", self.effort,
+            "--output-format", "stream-json", "--verbose", "--max-turns", str(self.max_turns),
+            "--strict-mcp-config", "--mcp-config", json.dumps(config), "--tools", "",
+            "--allowedTools", "mcp__rebot__*", "--permission-mode", "dontAsk",
+            "--append-system-prompt", CLI_PROMPT,
+        ]
+
+    def stop(self):
+        self.cancel.set()
+        if self.process and self.process.poll() is None:
+            self.process.terminate()
+
+    def tool_use(self, block):
+        name = block.get("name", "").removeprefix("mcp__rebot__")
+        args = block.get("input") or {}
+        self.pending[block.get("id")] = (name, args)
+        if name == "run_policy":
+            self.emit("code", args.get("code", ""))
+        else:
+            shown = json.dumps(args) if args else ""
+            self.emit("info", f"{name} {shown}".strip())
+
+    def tool_result(self, block):
+        name, args = self.pending.pop(block.get("tool_use_id"), ("", {}))
+        content = block.get("content")
+        parts = content if isinstance(content, list) else [{"type": "text", "text": str(content or "")}]
+        text = "\n".join(part.get("text", "") for part in parts if part.get("type") == "text").strip()
+        for part in parts:
+            if part.get("type") == "image":
+                self.emit("image", f"Looked through the {args.get('camera', 'overview')} camera", image=part.get("source", {}).get("data", ""))
+        failed = bool(block.get("is_error")) or text.startswith(("Error", "RobotError", "Stopped", "Traceback")) or "[policy failed" in text
+        if name == "run_policy" and not failed:
+            self.scripts.append(args.get("code", ""))
+        if text and name != "look":
+            self.emit("output", text[-6000:], ok=not failed)
+
+    def run(self):
+        self.emit("info", f"{self.model} through the Claude CLI, effort {self.effort}")
+        self.emit("thinking", f"{self.model} is starting")
+        try:
+            self.process = subprocess.Popen(self.command(), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=clean_env(), cwd=ROOT, bufsize=1)
+        except OSError as error:
+            self.emit("error", f"Could not start the claude CLI: {error}")
+            return False
+        result = None
+        for line in self.process.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except ValueError:
+                self.emit("info", line[:500])
+                continue
+            kind = event.get("type")
+            if kind == "assistant":
+                for block in event.get("message", {}).get("content", []):
+                    if block.get("type") == "text" and block.get("text", "").strip():
+                        self.summary = block["text"].strip()
+                        self.emit("text", self.summary, model=event.get("message", {}).get("model", self.model))
+                    elif block.get("type") == "tool_use":
+                        self.tool_use(block)
+                self.emit("thinking", f"{self.model} is working")
+            elif kind == "user":
+                content = event.get("message", {}).get("content", [])
+                for block in content if isinstance(content, list) else []:
+                    if block.get("type") == "tool_result":
+                        self.tool_result(block)
+                self.emit("thinking", f"{self.model} is thinking")
+            elif kind == "result":
+                result = event
+            elif kind == "system" and event.get("subtype") == "init":
+                servers = {server.get("name"): server.get("status") for server in event.get("mcp_servers", [])}
+                if servers.get("rebot") != "connected":
+                    self.emit("error", f"The robot tools did not connect: {servers.get('rebot')}")
+        self.process.wait()
+        if self.cancel.is_set():
+            self.emit("error", "Stopped by the operator")
+            return False
+        if result is None:
+            self.emit("error", f"The claude CLI exited with code {self.process.returncode} and no result")
+            return False
+        if result.get("is_error"):
+            self.emit("error", str(result.get("result") or result.get("subtype")))
+            return False
+        cost = result.get("total_cost_usd")
+        self.emit("info", f"Finished in {result.get('num_turns', '?')} turns, {round(result.get('duration_ms', 0) / 1000)} s" + (f", about ${cost:.2f} of usage" if cost else ""))
+        return True
+
+    save = Run.save
 
 
 def print_event(kind, text, **extra):
