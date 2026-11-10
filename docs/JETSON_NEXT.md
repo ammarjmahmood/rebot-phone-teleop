@@ -28,12 +28,12 @@ Not done yet:
 ## Jetson state as of 2026-11-09 22:45
 
 * The repo is on `sim/bimanual-mount` (commit `335047b` or later). Uncommitted work found on `main` (mount specs such as `--mount left=side_left@1.15`, `--gravity-scale`, pairing and motion windows, a guard in `app.js`, a Clear fault button) was saved to the local branch `jetson/mount-wip` (`241e93b`) and to `~/jetson-mount-wip-20261109.patch`. The pairing and motion window options were brought into this branch; the rest is waiting for a decision.
-* `rebot-teleop.service` (systemd, enabled at boot, `Restart=always`) runs `python -m rebot_teleop --lan --port 8081 --https-port 8443 --pairing-ttl 86400 --motion-window 2700 --arm left=can1 --arm right=can2` from this folder. It was still running the old code when this was written; `sudo systemctl restart rebot-teleop` loads the new code. Both arms were not answering on can1 and can2 at the time (no power or no CAN link).
+* `rebot-teleop.service` (systemd, enabled at boot, `Restart=always`) runs `python -m rebot_teleop --lan --port 8081 --https-port 8443 --pairing-ttl 86400 --motion-window 2700 --arm left=can1 --arm right=can2` from this folder. It was restarted onto this branch at 22:50 while both arms were unpowered (not answering on can1 and can2); it now reports the side mounts (shoulders at 1.145 m, rolled 90 degrees).
 * The service does not pass `--mount`, so this branch's default side mounts apply, which is what the post assembly needs.
-* Agent packages (`.[agent,camera]`) are installed and import cleanly; 29 tests that do not need PyBullet pass on the Jetson.
-* Seeed's arm meshes were copied to `~/rebot-phone-teleop/meshes` (ignored by git).
-* PyBullet 3.2.7 was compiling from source; check with `.venv/bin/python -c "import pybullet"` and rerun `~/.local/bin/uv pip install --python .venv/bin/python pybullet==3.2.7` if it is missing.
-* Claude Code is not installed yet: `curl -fsSL https://claude.ai/install.sh | bash`, then `claude login`.
+* Installed: agent and camera packages, PyBullet 3.2.7 (built from source, GPU rendering through EGL works), Seeed's arm meshes in `~/rebot-phone-teleop/meshes`, and Claude Code 2.1.322 in `~/.local/bin`. All 58 tests pass on the Jetson, simulator tests included.
+* The Jetson renders a camera picture in 50 to 120 ms (the PC takes 5 ms), so while a camera streams the simulator runs at about 5% of real time there. Use the Jetson simulator for teleop and arm checks, and the PC simulator for camera based agent work.
+* Claude Code is installed but not logged in: run `claude login`, then `claude` once in this folder to approve the `rebot` MCP server.
+* The robot tools load on the Jetson (16 tools) and refuse the real arms until `REBOT_ALLOW_REAL=1` is set, as intended.
 * No `/dev/video` devices were present, so the wrist cameras were not plugged in.
 
 ## Where to run what
