@@ -1,8 +1,17 @@
 const $ = id => document.getElementById(id);
 let xrSession = null, refSpace = null, gl = null, sending = false, lastSent = 0, lastNote = null, stopping = false;
 const status = text => { $('status').textContent = text; };
-async function api(path, body) {
-  const response = await fetch('/api/' + path, {method: body === undefined ? 'GET' : 'POST', headers: body === undefined ? {} : {'Content-Type': 'application/json'}, body: body === undefined ? undefined : JSON.stringify(body)});
+async function api(path, body, timeoutMs) {
+  const abort = timeoutMs && window.AbortController ? new AbortController() : null;
+  const timer = abort ? setTimeout(() => abort.abort(), timeoutMs) : null;
+  let response;
+  try {
+    response = await fetch('/api/' + path, {method: body === undefined ? 'GET' : 'POST', headers: body === undefined ? {} : {'Content-Type': 'application/json'}, body: body === undefined ? undefined : JSON.stringify(body), signal: abort ? abort.signal : undefined});
+  } catch (error) {
+    throw new Error(error.name === 'AbortError' ? 'The arm computer is not answering' : 'Connection to the arm computer lost');
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
   let data = {};
   try { data = await response.json(); } catch {}
   if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Request failed');
@@ -71,15 +80,18 @@ function onFrame(time, frame) {
   if (!Object.keys(hands).length) return;
   sending = true;
   lastSent = time;
-  api('quest/pose', {hands}).then(result => {
+  api('quest/pose', {hands}, 600).then(result => {
+    const held = [];
     for (const [hand, note] of Object.entries(result.notes || {})) {
       const pad = pads[hand];
-      if (note && note !== lastNotes[hand] && pad && pad.hapticActuators && pad.hapticActuators[0]) pad.hapticActuators[0].pulse(0.6, 80).catch(() => {});
+      const dropped = result.active && result.active[hand] === false;
+      if (note && note !== lastNotes[hand] && pad && pad.hapticActuators && pad.hapticActuators[0]) pad.hapticActuators[0].pulse(dropped ? 1.0 : 0.6, dropped ? 300 : 80).catch(() => {});
       lastNotes[hand] = note;
+      if (dropped && note) held.push(hand + ' arm: ' + note);
     }
+    status(held.length ? held.join('. ') + '. Let go and squeeze grip again to carry on.' : 'In VR. Hold grip to move.');
   }).catch(error => {
-    status(error.message);
-    if (/Start VR control/.test(error.message) && xrSession) xrSession.end();
+    status(error.message + '. Still trying; the arm holds.');
   }).finally(() => { sending = false; });
 }
 (async () => {

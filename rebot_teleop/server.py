@@ -693,6 +693,9 @@ def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, heb
             raise HTTPException(404)
         return current.status()
 
+    app.state.quest_resume = {}
+    app.state.quest_live = None
+
     def quest_controllers(request):
         return {current.hand: current.controllers["quest"] for current in nodes(request).values()}
 
@@ -703,31 +706,56 @@ def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, heb
         controllers = quest_controllers(request)
         if action == "start":
             started = []
-            for hand, current in controllers.items():
+            powered = {hand: current for hand, current in controllers.items() if current.node.arm.torque}
+            if not powered:
+                raise ValueError("Power the arm on first")
+            for hand, current in powered.items():
                 current.set_view(body.get("view", current.view))
                 current.use_rotation = bool(body.get("rotation", True))
                 await current.start(principal)
                 started.append(hand)
+            request.app.state.quest_live = principal.id
             return {"hands": started}
         if any(c.owner not in {None, principal.id} for c in controllers.values()):
             raise ValueError("Another device has control")
         if action == "stop":
             for current in controllers.values():
                 await current.stop("Left VR")
+            request.app.state.quest_live = None
             return {"status": "stopped"}
         if action == "pose":
             hands = body.get("hands") or {"right": {key: body[key] for key in ("position", "quaternion_wxyz", "inputs") if key in body}}
-            if not any(c.active for c in controllers.values()):
-                raise ValueError("Start VR control first")
             notes = {}
+            active = {}
+            resume = request.app.state.quest_resume
+            now = time.monotonic()
             for hand, sample in hands.items():
                 current = controllers.get(hand)
-                if current is None or not current.active or "position" not in sample:
+                if current is None or "position" not in sample:
                     continue
                 inputs = {str(k)[:4]: float(v) for k, v in dict(sample.get("inputs", {})).items()}
+                squeezed = bool(inputs.get("b1"))
+                before = resume.get(hand, {})
+                resume[hand] = {"squeezed": squeezed, "at": before.get("at", 0.0)}
+                if not current.active:
+                    node = current.node
+                    others = any(other.active for other in node.controllers.values() if other is not current)
+                    if squeezed and not before.get("squeezed") and now - before.get("at", 0.0) > 1.0 and node.arm.torque and not node.estopped and not others and request.app.state.quest_live == principal.id:
+                        resume[hand]["at"] = now
+                        try:
+                            if node.fault or node.arm.fault:
+                                node.reset()
+                            await current.start(principal)
+                        except ValueError as error:
+                            notes[hand] = str(error)
+                    if not current.active:
+                        notes.setdefault(hand, "Stop is latched; reset it at the computer" if current.node.estopped else "Power the arm on first" if not current.node.arm.torque else current.node.fault or "Squeeze grip to take control")
+                        active[hand] = False
+                        continue
+                active[hand] = True
                 current.source.push(sample["position"], sample["quaternion_wxyz"], {k: (int(v) if k.startswith("b") else v) for k, v in inputs.items()})
                 notes[hand] = current.note
-            return {"notes": notes, "note": next((n for n in notes.values() if n), None), "hands": list(controllers)}
+            return {"notes": notes, "note": next((n for n in notes.values() if n), None), "hands": list(controllers), "active": active}
         raise HTTPException(404)
 
     @app.websocket("/ws/app")

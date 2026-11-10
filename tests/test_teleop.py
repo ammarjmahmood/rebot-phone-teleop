@@ -325,7 +325,9 @@ def test_server_pairing_socket_autostart_and_quest_api(tmp_path, monkeypatch):
                 break
             time.sleep(0.02)
         assert not node.controllers["app"].active
-        assert client.post("/api/quest/pose", json={"position": [0, 0, 0], "quaternion_wxyz": [1, 0, 0, 0]}).status_code == 409
+        idle = client.post("/api/quest/pose", json={"position": [0, 0, 0], "quaternion_wxyz": [1, 0, 0, 0], "inputs": {"b1": 1}})
+        assert idle.status_code == 200 and idle.json()["active"] == {"right": False}
+        assert not node.controllers["quest"].active
         assert client.get("/quest").status_code == 200
         client.cookies.clear()
         with pytest.raises(Exception):
@@ -525,3 +527,38 @@ def test_a_camera_bridge_folder_gives_colour_lens_and_depth_for_locate(tmp_path)
     assert point["xyz"] == pytest.approx([0.0, 0.0, 0.5], abs=0.02)
     (tmp_path / "info.json").write_text(json_module.dumps({"width": width, "height": height, "fx": 50.0, "fy": 50.0, "cx": 31.5, "cy": 23.5, "depth": True, "time": time_module.time() - 60}))
     assert camera.frame() is None and "old" in camera.status()["note"]
+
+
+def test_quest_keeps_the_other_arm_and_resumes_a_faulted_arm_on_a_fresh_squeeze(tmp_path):
+    build, buses, holder = make_node(tmp_path / "data")
+    arms = {"left": "can1", "right": "can2"}
+    with TestClient(create_app(tmp_path / "data", tmp_path / ".env", arms=arms, node_factory=build)) as client:
+        client.post("/api/session", json={})
+        assert client.post("/api/power", json={"arm": "left", "home": False}).status_code == 200
+        assert client.post("/api/quest/start", json={"view": "behind"}).json()["hands"] == ["left"]
+        assert client.post("/api/power", json={"arm": "right", "home": False}).status_code == 200
+        assert client.post("/api/quest/start", json={"view": "behind"}).json()["hands"] == ["left", "right"]
+        left, right = holder["left"], holder["right"]
+        still = {"position": [0, 1.2, 0], "quaternion_wxyz": [1, 0, 0, 0]}
+
+        def send(left_grip, right_grip):
+            return client.post("/api/quest/pose", json={"hands": {"left": {**still, "inputs": {"b1": left_grip}}, "right": {**still, "inputs": {"b1": right_grip}}}}).json()
+
+        assert send(1, 1)["active"] == {"left": True, "right": True}
+        left.arm._fail("Joint 1 is not following its command; check for a collision or obstruction")
+        for _ in range(50):
+            if not left.controllers["quest"].active:
+                break
+            time.sleep(0.02)
+        held = send(1, 1)
+        assert held["active"] == {"left": False, "right": True}
+        assert "not following" in held["notes"]["left"]
+        assert send(0, 1)["active"] == {"left": False, "right": True}
+        assert send(1, 1)["active"] == {"left": True, "right": True}
+        assert left.arm.fault is None and left.fault is None
+        client.post("/api/stop", json={})
+        assert send(0, 0)["active"] == {"left": False, "right": False}
+        latched = send(1, 1)
+        assert latched["active"] == {"left": False, "right": False}
+        assert "latched" in latched["notes"]["left"]
+        client.post("/api/quest/stop", json={})

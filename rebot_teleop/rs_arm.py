@@ -12,7 +12,7 @@ LIMITS_DEG = ((-155.0, 155.0), (-3.0, 175.0), (-3.0, 175.0), (-85.0, 85.0), (-85
 ZERO_TOLERANCE = math.radians(6.0)
 RECOVERABLE_EXCESS = math.radians(min(45.0, max(0.0, float(os.environ.get("REBOT_TELEOP_LIMIT_SLACK_DEG", "15")))))
 TRACKING_LIMIT = math.radians(max(0.0, float(os.environ.get("REBOT_TELEOP_TRACKING_LIMIT_DEG", "15"))))
-TRACKING_GRACE_S = 0.4
+TRACKING_GRACE_S = max(0.0, float(os.environ.get("REBOT_TELEOP_TRACKING_GRACE_S", "0.4")))
 FEEDBACK_TIMEOUT_S = 0.5
 TEMPERATURE_WARN_C = 75.0
 TEMPERATURE_LIMIT_C = 100.0
@@ -211,8 +211,10 @@ class RSArm:
                     if self.gravity is not None and self.gravity_scale:
                         torque = np.asarray(self.gravity(self.measured[:6])) * self.gravity_scale
                         self.tau[:6] = np.clip(np.nan_to_num(torque), -np.array(GRAVITY_LIMIT_NM), GRAVITY_LIMIT_NM)
-                    for motor, position, offset, rate, tau, (kp, kd) in zip(self.motors, self.command, self.offset, self.rate, self.tau, GAINS):
-                        motor.send_mit(float(position - offset), float(rate), kp, kd, float(tau))
+                    frames = [(motor, float(position - offset), float(rate), kp, kd, float(tau)) for motor, position, offset, rate, tau, (kp, kd) in zip(self.motors, self.command, self.offset, self.rate, self.tau, GAINS)]
+                for motor, position, rate, kp, kd, tau in frames:
+                    motor.send_mit(position, rate, kp, kd, tau)
+                with self.lock:
                     self._feedback(tick % 100 == 0)
             except Exception as error:
                 self._fail(f"Motor communication failed: {error}")

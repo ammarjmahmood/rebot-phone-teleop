@@ -188,6 +188,12 @@ def main():
     if args.lan:
         host = "0.0.0.0"
         os.environ["REBOT_TELEOP_LAN"] = "1"
+    extra = data / "server.env"
+    if extra.exists():
+        for line in extra.read_text().splitlines():
+            key, sep, value = line.strip().partition("=")
+            if sep and key.startswith("REBOT_TELEOP_"):
+                os.environ.setdefault(key, value.strip())
     os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
     os.environ.setdefault("OMP_NUM_THREADS", "1")
     from rebot_teleop.server import create_app, lan_addresses
