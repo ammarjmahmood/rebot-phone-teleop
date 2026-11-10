@@ -1,5 +1,6 @@
 const $ = id => document.getElementById(id);
 let xrSession = null, refSpace = null, gl = null, sending = false, lastSent = 0, lastNote = null, stopping = false;
+let socket = null, socketReady = false;
 const status = text => { $('status').textContent = text; };
 async function api(path, body) {
   const response = await fetch('/api/' + path, {method: body === undefined ? 'GET' : 'POST', headers: body === undefined ? {} : {'Content-Type': 'application/json'}, body: body === undefined ? undefined : JSON.stringify(body)});
@@ -8,13 +9,33 @@ async function api(path, body) {
   if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Request failed');
   return data;
 }
+
+function connect() {
+  if (socket && (socket.readyState === 0 || socket.readyState === 1)) return;
+  socket = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws/quest');
+  socket.onopen = () => { socketReady = true; };
+  socket.onclose = () => { socketReady = false; setTimeout(() => { if (xrSession) connect(); }, 1000); };
+  socket.onerror = () => { socketReady = false; };
+  socket.onmessage = event => {
+    let data = {};
+    try { data = JSON.parse(event.data); } catch { return; }
+    if (data.type !== 'status') return;
+    const message = data.fault || data.note || data.warning;
+    if (message && message !== lastNote) status(message);
+    lastNote = message || null;
+  };
+}
+function send(payload) {
+  if (socket && socketReady && socket.bufferedAmount < 65536) { socket.send(JSON.stringify(payload)); return true; }
+  return false;
+}
 async function showReady() {
   $('pair').hidden = true;
   $('ready').hidden = false;
   try { const v = localStorage.getItem('view'); if (v) $('view').value = v; } catch {}
   const state = await api('state');
   if (!navigator.xr) { status('No WebXR here. Open this page in the Quest browser over https.'); return; }
-  status((state.torque ? 'Arm motors on. ' : 'Power the arm on at the computer first. ') + (state.remote_seconds > 0 || state.principal.local ? '' : 'Allow phone and headset motion at the computer first.'));
+  status((state.torque ? 'Arm motors on. ' : 'Power the arm on at the computer first. ') + (state.remote_seconds > 0 || (state.principal && state.principal.local) ? '' : 'Allow phone and headset motion at the computer first.'));
 }
 $('pair').onsubmit = async event => {
   event.preventDefault();
@@ -23,7 +44,8 @@ $('pair').onsubmit = async event => {
 $('view').onchange = () => { try { localStorage.setItem('view', $('view').value); } catch {} };
 $('enter').onclick = async () => {
   try {
-    await api('quest/start', {view: $('view').value, rotation: $('rotation').checked});
+    connect();
+    if (!send({type: 'start', view: $('view').value, rotation: $('rotation').checked})) await api('quest/start', {view: $('view').value, rotation: $('rotation').checked});
     const mode = await navigator.xr.isSessionSupported('immersive-ar').catch(() => false) ? 'immersive-ar' : 'immersive-vr';
     xrSession = await navigator.xr.requestSession(mode, {requiredFeatures: ['local-floor']});
     gl = document.createElement('canvas').getContext('webgl', {xrCompatible: true, alpha: true});
@@ -39,6 +61,7 @@ $('enter').onclick = async () => {
     api('quest/stop', {}).catch(() => {});
   }
 };
+$('reset').onclick = () => { if (!send({type: 'reset'})) api('reset', {}).catch(error => status(error.message)); else status('Reset sent.'); };
 $('exit').onclick = () => { if (xrSession) xrSession.end(); else endVR(); };
 async function endVR() {
   if (stopping) return;
@@ -46,7 +69,8 @@ async function endVR() {
   xrSession = null;
   $('enter').hidden = false;
   $('exit').hidden = true;
-  try { await api('quest/stop', {}); status('VR control stopped. The arm is holding.'); } catch (error) { status(error.message); }
+  if (!send({type: 'stop'})) { try { await api('quest/stop', {}); } catch (error) { status(error.message); } }
+  status('VR control stopped. The arm is holding.');
   stopping = false;
 }
 let lastNotes = {};
@@ -56,8 +80,8 @@ function onFrame(time, frame) {
   gl.bindFramebuffer(gl.FRAMEBUFFER, session.renderState.baseLayer.framebuffer);
   gl.clearColor(0, 0, 0, 0);
   gl.clear(gl.COLOR_BUFFER_BIT);
-  if (sending || time - lastSent < 22) return;
-  const hands = {}, pads = {};
+  if (time - lastSent < 11) return;
+  const hands = {};
   for (const source of session.inputSources) {
     if (!source.gripSpace || (source.handedness !== 'left' && source.handedness !== 'right')) continue;
     const pose = frame.getPose(source.gripSpace, refSpace);
@@ -65,22 +89,17 @@ function onFrame(time, frame) {
     const pad = source.gamepad;
     const button = i => pad && pad.buttons[i] ? pad.buttons[i] : {pressed: false, value: 0};
     const p = pose.transform.position, q = pose.transform.orientation;
-    hands[source.handedness] = {position: [p.x, p.y, p.z], quaternion_wxyz: [q.w, q.x, q.y, q.z], inputs: {b1: button(1).value > 0.5 ? 1 : 0, grip: 1 - button(0).value, b8: button(5).pressed ? 1 : 0}};
-    pads[source.handedness] = pad;
+    hands[source.handedness] = {p: [p.x, p.y, p.z], q: [q.w, q.x, q.y, q.z], inputs: {b1: button(1).value > 0.5 ? 1 : 0, grip: 1 - button(0).value, b8: button(5).pressed ? 1 : 0}};
   }
   if (!Object.keys(hands).length) return;
-  sending = true;
   lastSent = time;
-  api('quest/pose', {hands}).then(result => {
-    for (const [hand, note] of Object.entries(result.notes || {})) {
-      const pad = pads[hand];
-      if (note && note !== lastNotes[hand] && pad && pad.hapticActuators && pad.hapticActuators[0]) pad.hapticActuators[0].pulse(0.6, 80).catch(() => {});
-      lastNotes[hand] = note;
-    }
-  }).catch(error => {
-    status(error.message);
-    if (/Start VR control/.test(error.message) && xrSession) xrSession.end();
-  }).finally(() => { sending = false; });
+  if (!send({type: 'pose', hands})) {
+    if (sending) return;
+    sending = true;
+    api('quest/pose', {hands: Object.fromEntries(Object.entries(hands).map(([k, v]) => [k, {position: v.p, quaternion_wxyz: v.q, inputs: v.inputs}]))})
+      .catch(error => { status(error.message); })
+      .finally(() => { sending = false; });
+  }
 }
 (async () => {
   const pairing = location.hash.match(/^#pair=(\d{8})$/);

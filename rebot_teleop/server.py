@@ -19,7 +19,7 @@ import segno
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from rebot_teleop.auth import Auth
+from rebot_teleop.auth import Auth, pairing_ttl
 from rebot_teleop.controller import TeleopController
 from rebot_teleop.models import Principal
 from rebot_teleop.node import TeleopNode
@@ -27,6 +27,15 @@ from rebot_teleop.sources import HebiSource, PushSource
 
 
 STATIC = Path(__file__).resolve().parent / "static"
+DEFAULT_MOTION_WINDOW = 900
+
+
+def motion_window():
+    try:
+        value = int(os.environ.get("REBOT_TELEOP_MOTION_WINDOW", DEFAULT_MOTION_WINDOW))
+    except ValueError:
+        return DEFAULT_MOTION_WINDOW
+    return value if 60 <= value <= 14400 else DEFAULT_MOTION_WINDOW
 BRIDGES = ("docker", "br-", "veth", "virbr", "lo")
 
 
@@ -127,7 +136,7 @@ class GistBookmark:
             self.status = f"gist update failed: {error}"
 
 
-def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, hebi_source=None):
+def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, hebi_source=None, mounts=None, gravity_scale=1.0):
     auth = Auth(env_path)
     port = int(os.environ.get("REBOT_TELEOP_PORT", "8080"))
     https_port = int(os.environ.get("REBOT_TELEOP_HTTPS_PORT", "9443"))
@@ -153,7 +162,7 @@ def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, heb
 
     def build(name, channel):
         folder = Path(data_dir) if len(arms) == 1 else Path(data_dir) / "arms" / name
-        current = node_factory(name, channel) if node_factory else TeleopNode(folder, channel)
+        current = node_factory(name, channel) if node_factory else TeleopNode(folder, channel, mount=(mounts or {}).get(name), gravity_scale=gravity_scale)
         current.name = name
         current.hand = name if name in {"left", "right"} else "right"
         current.controllers = {
@@ -329,11 +338,11 @@ def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, heb
         device(request)
         enabled = bool((await body_of(request)).get("enabled"))
         for current in nodes(request).values():
-            current.remote_until = time.monotonic() + 900 if enabled else 0
+            current.remote_until = time.monotonic() + motion_window() if enabled else 0
             if not enabled:
                 for controller in current.controllers.values():
                     await controller.stop("Phone motion revoked", keep_source=True)
-        return {"enabled": enabled}
+        return {"enabled": enabled, "seconds": motion_window() if enabled else 0}
 
     @app.post("/api/pair")
     async def pair(request: Request):
@@ -346,7 +355,7 @@ def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, heb
         for name, url, quest in routes:
             link = app_link(url, code)
             addresses.append({"interface": name, "label": route_label(name), "url": url, "quest": quest, "app_link": link, "qr": segno.make(link, error="m").svg_data_uri(scale=5, border=2)})
-        return {"code": code, "expires_in": 300, "addresses": addresses, "lan": lan, "cloudflare": tunnel.status if tunnel else None, "gist": gist.status if gist else None}
+        return {"code": code, "expires_in": pairing_ttl(), "addresses": addresses, "lan": lan, "cloudflare": tunnel.status if tunnel else None, "gist": gist.status if gist else None}
 
     @app.post("/api/hebi/{action}")
     async def hebi(action: str, request: Request):
@@ -504,6 +513,80 @@ def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, heb
                 current = current_node.controllers["app"]
                 if current.owner == principal.id:
                     await current.stop("Phone app disconnected")
+
+    @app.websocket("/ws/quest")
+    async def quest_socket(websocket: WebSocket):
+        if not host_allowed(websocket.url.hostname):
+            await websocket.close(code=4403)
+            return
+        origin = websocket.headers.get("origin")
+        if origin and urlparse(origin).netloc != websocket.url.netloc:
+            await websocket.close(code=4403)
+            return
+        principal = bearer(websocket.headers.get("authorization", "")) or auth.resolve(websocket.cookies.get("rebot_teleop", ""), False)
+        if principal is None or principal.role == "viewer":
+            await websocket.close(code=4401)
+            return
+        everything = websocket.app.state.nodes
+        hands = {current.hand: current.controllers["quest"] for current in everything.values()}
+        await websocket.accept()
+        note = {"text": None}
+
+        async def report():
+            while True:
+                first = next(iter(everything.values()))
+                await websocket.send_json({
+                    "type": "status",
+                    "note": note["text"] or next((c.note for c in hands.values() if c.note), None) or first.fault,
+                    "active": any(c.active for c in hands.values()),
+                    "torque": all(current.arm.torque for current in everything.values()),
+                    "fault": next((current.arm.fault for current in everything.values() if current.arm.fault), None),
+                    "warning": next((current.arm.temperature_warning for current in everything.values() if current.arm.temperature_warning), None),
+                    "remote": principal.local or any(time.monotonic() < current.remote_until for current in everything.values()),
+                    "hands": sorted(hands),
+                })
+                note["text"] = None
+                await asyncio.sleep(0.2)
+
+        reporter = asyncio.create_task(report())
+        try:
+            while True:
+                message = await websocket.receive_json()
+                kind = message.get("type") if isinstance(message, dict) else None
+                try:
+                    if kind == "pose":
+                        for hand, sample in (message.get("hands") or {}).items():
+                            current = hands.get(hand)
+                            if current is None or not current.active or "p" not in sample:
+                                continue
+                            inputs = {str(k)[:4]: float(v) for k, v in dict(sample.get("inputs", {})).items()}
+                            current.source.push([float(v) for v in sample["p"]][:3], [float(v) for v in sample["q"]][:4], {k: (int(v) if k.startswith("b") else v) for k, v in inputs.items()})
+                    elif kind == "start":
+                        for current in hands.values():
+                            current.set_view(message.get("view", current.view))
+                            current.use_rotation = bool(message.get("rotation", True))
+                            await current.start(principal)
+                    elif kind == "stop":
+                        for current in hands.values():
+                            if current.owner == principal.id:
+                                await current.stop("Left VR")
+                    elif kind == "home":
+                        for name, current in hands.items():
+                            node_for = next(n for n in everything.values() if n.hand == name)
+                            asyncio.create_task(node_for.home_with(current, principal) if current.active else node_for.home())
+                    elif kind == "reset":
+                        for current in everything.values():
+                            current.reset()
+                        note["text"] = "Reset"
+                except (KeyError, TypeError, ValueError, StopIteration) as error:
+                    note["text"] = str(error) or "Request rejected"
+        except (WebSocketDisconnect, RuntimeError):
+            pass
+        finally:
+            reporter.cancel()
+            for current in hands.values():
+                if current.owner == principal.id:
+                    await current.stop("Headset disconnected")
 
     @app.get("/")
     async def index():

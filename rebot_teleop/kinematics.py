@@ -4,9 +4,48 @@ import numpy as np
 import pinocchio as pin
 
 
+GRAVITY_MS2 = 9.81
+DEFAULT_FLOOR_M = 0.05
+MOUNT_PRESETS = {
+    "upright": (0.0, 0.0, 0.0),
+    "inverted": (180.0, 0.0, 0.0),
+    "side_left": (-90.0, 0.0, 0.0),
+    "side_right": (90.0, 0.0, 0.0),
+}
+
+
+def rpy_matrix(roll, pitch, yaw):
+    roll, pitch, yaw = (math.radians(float(v)) for v in (roll, pitch, yaw))
+    rx = np.array([[1.0, 0.0, 0.0], [0.0, math.cos(roll), -math.sin(roll)], [0.0, math.sin(roll), math.cos(roll)]])
+    ry = np.array([[math.cos(pitch), 0.0, math.sin(pitch)], [0.0, 1.0, 0.0], [-math.sin(pitch), 0.0, math.cos(pitch)]])
+    rz = np.array([[math.cos(yaw), -math.sin(yaw), 0.0], [math.sin(yaw), math.cos(yaw), 0.0], [0.0, 0.0, 1.0]])
+    return rz @ ry @ rx
+
+
+def parse_mount(spec):
+    if spec is None or not str(spec).strip():
+        return np.eye(3), DEFAULT_FLOOR_M
+    body, _, height = str(spec).strip().partition("@")
+    body = body.strip()
+    floor = DEFAULT_FLOOR_M
+    if height.strip():
+        floor = float(height)
+        if not math.isfinite(floor) or floor < 0:
+            raise ValueError("Mount height must be a distance in metres, for example side_left@1.15")
+    if body in MOUNT_PRESETS:
+        return rpy_matrix(*MOUNT_PRESETS[body]), floor
+    parts = [p for p in body.replace(" ", "").split(",") if p]
+    if len(parts) != 3:
+        raise ValueError("Mount must be " + ", ".join(sorted(MOUNT_PRESETS)) + " or three angles in degrees such as -90,0,0")
+    return rpy_matrix(*(float(p) for p in parts)), floor
+
+
 class Kinematics:
-    def __init__(self, urdf: Path):
+    def __init__(self, urdf: Path, mount=None, floor_m=DEFAULT_FLOOR_M):
         self.model = pin.buildModelFromUrdf(str(urdf))
+        self.mount = np.eye(3) if mount is None else np.asarray(mount, dtype=float).reshape(3, 3)
+        self.floor_m = float(floor_m)
+        self.model.gravity.linear = self.mount.T @ np.array([0.0, 0.0, -GRAVITY_MS2])
         self.data = self.model.createData()
         self.indices = [self.model.joints[self.model.getJointId(f"joint{i}")].idx_q for i in range(1, 7)]
         self.lower = self.model.lowerPositionLimit[self.indices].copy()
@@ -37,7 +76,10 @@ class Kinematics:
         points.append(data.oMf[self.tip].translation.copy())
         return np.array(points)
 
-    def validate(self, q, min_z=-0.05, max_radius=0.8):
+    def world_points(self, q):
+        return self.points(q) @ self.mount.T
+
+    def validate(self, q, min_z=None, max_radius=0.8):
         q = np.asarray(q, dtype=float)
         if q.shape != (6,) or not np.isfinite(q).all():
             raise ValueError("Six finite joint positions are required")
@@ -45,8 +87,9 @@ class Kinematics:
         if outside.size:
             joint = int(outside[0])
             raise ValueError(f"Joint {joint + 1} limit reached at {math.degrees(q[joint]):.1f} degrees")
-        points = self.points(q)
-        if np.any(points[:, 2] < min_z) or np.any(np.linalg.norm(points[:, :2], axis=1) > max_radius):
+        points = self.world_points(q)
+        floor = -self.floor_m if min_z is None else min_z
+        if np.any(points[:, 2] < floor) or np.any(np.linalg.norm(points[:, :2], axis=1) > max_radius):
             raise ValueError("Workspace boundary reached")
 
     def inverse_pose(self, position, rotation, seed, orientation_weight=0.4, iterations=60):

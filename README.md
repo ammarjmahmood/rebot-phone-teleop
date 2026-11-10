@@ -65,6 +65,24 @@ Give each arm its own PEAK adapter and name them when starting:
 
 `--list-can` shows each CAN interface with its USB port so you can tell the adapters apart; interface numbers follow plug order, so keep each adapter in the same USB port. Every arm gets its own card on the control page (power, home, release, gripper range), its own safety monitor and its own settings. In the iPhone app a Left / Right switch picks the arm you drive; switching hands control over instantly. On the Quest the left controller drives the left arm and the right controller the right arm. Stop stops both. The arms do not know about each other, so mount them far enough apart that they cannot collide.
 
+### Mounting an arm on its side or upside down
+
+The server assumes an arm is bolted down with its base plate flat and its first joint pointing at the sky. Three things depend on that: the gravity feedforward builds its torques from a gravity vector in the base frame, the workspace guard treats the base plane as the floor, and phone and headset motion is mapped straight into the base frame. Fix the arm some other way and all three are wrong. On a torso where the arms hang off the sides, the feedforward at a typical pose changes from 6.8 Nm to 0.88 Nm, so an arm left on the default pushes about 6 Nm the wrong way.
+
+Tell the server how each arm is actually fixed:
+
+```sh
+.venv/bin/python -m rebot_teleop --lan \
+  --arm left=can1 --mount left=side_left@1.15 \
+  --arm right=can2 --mount right=side_right@1.15
+```
+
+The spec is `upright`, `inverted`, `side_left`, `side_right` or three roll, pitch and yaw angles in degrees in the URDF convention, such as `-90,0,0`. `side_left` turns the base so its z axis points to the robot's left and `side_right` points it to the robot's right. The rotation describes the base in a world frame where z is up, x is the way the robot faces and y is the robot's left.
+
+What follows `@` is the height of the base above the floor in metres, and the workspace guard uses it as the floor. It defaults to 0.05, which suits a table. Leave it out on a torso and the arm refuses to move, because its own forearm is already far below the plane the guard thinks is the ground.
+
+Set the mount before the first power on. Check the mount reported on the control page, then bring an arm up with **Power on and hold here** and confirm it holds still rather than drifting. A base rotated the wrong way shows up at once as the arm pulling to one side.
+
 ### Quest bookmark with a GitHub gist
 
 With `--cloudflare`, the server can write the current tunnel address into a secret GitHub gist each time it starts, so the Quest only needs one bookmark. Create a GitHub token that can only manage gists (Settings, Developer settings, fine grained token or classic token with the `gist` scope) and add it to `~/.rebot-teleop/.env` on the arm computer:

@@ -3,7 +3,7 @@ import math
 import time
 from pathlib import Path
 import numpy as np
-from rebot_teleop.kinematics import Kinematics
+from rebot_teleop.kinematics import Kinematics, parse_mount
 from rebot_teleop.rs_arm import RSArm
 from rebot_teleop.settings import Settings
 
@@ -14,10 +14,12 @@ HOME_ACCELERATION = math.radians(60.0)
 
 
 class TeleopNode:
-    def __init__(self, data_dir: Path, channel="can0", arm=None):
+    def __init__(self, data_dir: Path, channel="can0", arm=None, mount=None, gravity_scale=1.0):
         self.settings = Settings(Path(data_dir) / "settings.json")
-        self.kin = Kinematics(ASSETS / "rebot_rs.urdf")
-        self.arm = arm or RSArm(channel, gripper_open_deg=270.0, gravity=self.kin.gravity_function())
+        self.mount_spec = mount if mount is not None else self.settings.get("mount")
+        matrix, floor = parse_mount(self.mount_spec)
+        self.kin = Kinematics(ASSETS / "rebot_rs.urdf", mount=matrix, floor_m=floor)
+        self.arm = arm or RSArm(channel, gripper_open_deg=270.0, gravity=self.kin.gravity_function(), gravity_scale=gravity_scale)
         self.kin.lower = self.arm.lower.copy()
         self.kin.upper = self.arm.upper.copy()
         saved = self.settings.get("gripper_range")
@@ -198,5 +200,6 @@ class TeleopNode:
         return {
             **arm, "owner": self.owner, "estopped": self.estopped, "fault": self.fault or arm["fault"], "homing": bool(self.motion and not self.motion.done()),
             "joints_deg": [round(math.degrees(v), 1) for v in self.arm.q], "remote_seconds": max(0, round(self.remote_until - time.monotonic())),
+            "mount": self.mount_spec or "upright", "floor_m": round(self.kin.floor_m, 3),
             "controllers": {name: controller.status() for name, controller in self.controllers.items()},
         }

@@ -71,12 +71,17 @@ class TeleopController:
         return self.task is not None and not self.task.done()
 
     @property
-    def axes(self):
+    def world_axes(self):
         if self.frame == "webxr":
             return view_matrix(self.view) @ XR_BEHIND
         if self.frame == "align":
             return None if self.user_axes is None else view_matrix(self.view) @ self.user_axes
         return self.calibrated_axes
+
+    @property
+    def axes(self):
+        world = self.world_axes
+        return None if world is None else self.node.kin.mount.T @ world
 
     async def start(self, principal):
         node = self.node

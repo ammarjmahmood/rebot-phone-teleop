@@ -13,13 +13,15 @@ const act = fn => async () => { try { await fn(); await poll(); } catch (error) 
 const releaseArmed = {};
 const armedRecently = name => releaseArmed[name] && Date.now() - releaseArmed[name] < 4000;
 function armCard(name, a, local) {
-  const status = !a.connected ? 'Arm not answering. Check its 48 V supply and CAN adapter, then press Power on.' : a.estopped ? 'Stop is latched. Check the arm, then Reset stop.' : !a.torque ? 'Motors off.' : a.homing ? 'Moving to zero.' : a.owner ? 'Under teleop control.' : 'Motors on and holding.';
+  const status = a.temperature_warning && a.connected && !a.fault ? a.temperature_warning : !a.connected ? 'Arm not answering. Check its 48 V supply and CAN adapter, then press Power on.' : a.estopped ? 'Stop is latched. Check the arm, then Reset stop.' : !a.torque ? 'Motors off.' : a.homing ? 'Moving to zero.' : a.owner ? 'Under teleop control.' : 'Motors on and holding.';
   const joints = a.joints_deg.map((v, i) => `<div>J${i + 1} ${v.toFixed(1)}°</div>`).join('') + `<div>Grip ${a.gripper_deg}°</div>`;
-  const buttons = local ? `<div class="row">${a.torque ? '' : `<button class="primary" data-act="power-home" data-arm="${esc(name)}">Power on and go to zero</button><button data-act="power-hold" data-arm="${esc(name)}">Power on and hold here</button>`}${a.torque ? `<button data-act="home" data-arm="${esc(name)}">Home</button>` : ''}${a.estopped ? `<button data-act="reset" data-arm="${esc(name)}">Reset stop</button>` : ''}${a.torque ? `<button class="danger" data-act="release" data-arm="${esc(name)}">${armedRecently(name) ? 'Click again: arm may drop' : 'Release torque'}</button>` : ''}</div><div class="row"><button data-act="save-closed" data-arm="${esc(name)}">Save gripper as fully closed</button><button data-act="save-open" data-arm="${esc(name)}">Save gripper as fully open</button></div><p class="fine">Gripper range ${a.gripper_range_deg[0]}° to ${a.gripper_range_deg[1]}°. Release torque turns the motors off and the arm can drop, so support it first.</p>` : '';
+  const buttons = local ? `<div class="row">${a.torque ? '' : `<button class="primary" data-act="power-home" data-arm="${esc(name)}">Power on and go to zero</button><button data-act="power-hold" data-arm="${esc(name)}">Power on and hold here</button>`}${a.torque ? `<button data-act="home" data-arm="${esc(name)}">Home</button>` : ''}${a.estopped || a.fault ? `<button data-act="reset" data-arm="${esc(name)}">${a.estopped ? 'Reset stop' : 'Clear fault'}</button>` : ''}${a.torque ? `<button class="danger" data-act="release" data-arm="${esc(name)}">${armedRecently(name) ? 'Click again: arm may drop' : 'Release torque'}</button>` : ''}</div><div class="row"><button data-act="save-closed" data-arm="${esc(name)}">Save gripper as fully closed</button><button data-act="save-open" data-arm="${esc(name)}">Save gripper as fully open</button></div><p class="fine">Gripper range ${a.gripper_range_deg[0]}° to ${a.gripper_range_deg[1]}°. Release torque turns the motors off and the arm can drop, so support it first.</p>` : '';
   return `<section class="card"><h2>${esc(name === 'arm' ? 'Arm' : name.charAt(0).toUpperCase() + name.slice(1) + ' arm')} <span class="fine">${esc(a.channel)}</span></h2><p>${esc(status)}</p>${a.fault ? `<div class="notice">${esc(a.fault)}</div>` : ''}<div class="joints">${joints}</div>${buttons}</section>`;
 }
 function render() {
-  const s = state, local = s.principal.local;
+  const s = state;
+  if (!s || !s.principal || !s.arms || !Object.keys(s.arms).length) return;
+  const local = s.principal.local;
   document.querySelectorAll('.local').forEach(el => el.hidden = !local);
   $('fault').hidden = true;
   const names = Object.keys(s.arms);
@@ -28,8 +30,9 @@ function render() {
   const select = $('hebi-arm');
   if (select.options.length !== names.length) select.innerHTML = names.map(name => `<option value="${esc(name)}">${esc(name)}</option>`).join('');
   select.parentElement.hidden = names.length < 2;
-  const h = s.arms[select.value || names[0]].controllers.hebi;
-  $('hebi-status').textContent = !h.active ? 'Off' : h.calibrating ? 'Calibrating ' + h.calibrating + ': hold Move and move the phone' : h.source !== 'streaming' ? 'Looking for the HEBI app' : !h.ready ? 'Calibrate up, forward and left' : (h.note || (h.mode ? 'Moving' : 'Ready, hold Move'));
+  const chosen = s.arms[select.value] || s.arms[names[0]];
+  const h = chosen && chosen.controllers ? chosen.controllers.hebi : null;
+  $('hebi-status').textContent = !h ? 'Off' : !h.active ? 'Off' : h.calibrating ? 'Calibrating ' + h.calibrating + ': hold Move and move the phone' : h.source !== 'streaming' ? 'Looking for the HEBI app' : !h.ready ? 'Calibrate up, forward and left' : (h.note || (h.mode ? 'Moving' : 'Ready, hold Move'));
   $('gist').textContent = s.gist ? 'Quest bookmark: ' + s.gist : '';
 }
 async function poll() { try { state = await api('state'); $('connection').textContent = 'Connected'; render(); } catch (error) { $('connection').textContent = 'Connection lost'; } }

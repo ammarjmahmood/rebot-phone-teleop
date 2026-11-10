@@ -190,9 +190,38 @@ def test_hot_motor_faults():
     arm.confirm_zero()
     arm.enable()
     try:
-        buses[0].motors[5].temperature = 95.0
+        buses[0].motors[5].temperature = 110.0
         assert wait_for(lambda: arm.fault is not None, 3)
-        assert "temperature" in arm.fault
+        assert "cutout" in arm.fault
+    finally:
+        arm.close()
+
+
+def test_a_warm_motor_warns_without_stopping():
+    arm, buses = make_arm()
+    arm.connect()
+    arm.confirm_zero()
+    arm.enable()
+    try:
+        buses[0].motors[5].temperature = 80.0
+        assert wait_for(lambda: arm.temperature_warning is not None, 3)
+        assert arm.fault is None
+        assert arm.torque
+    finally:
+        arm.close()
+
+
+def test_the_warning_clears_when_it_cools():
+    arm, buses = make_arm()
+    arm.connect()
+    arm.confirm_zero()
+    arm.enable()
+    try:
+        buses[0].motors[5].temperature = 80.0
+        assert wait_for(lambda: arm.temperature_warning is not None, 3)
+        buses[0].motors[5].temperature = 40.0
+        assert wait_for(lambda: arm.temperature_warning is None, 3)
+        assert arm.fault is None
     finally:
         arm.close()
 

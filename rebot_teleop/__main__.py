@@ -41,6 +41,10 @@ def main():
     parser = argparse.ArgumentParser(description="Phone, HEBI and Quest teleoperation for the Seeed reBot B601 RS arm")
     parser.add_argument("--can", default="auto", help="SocketCAN interface connected to the arm; auto picks the PEAK USB adapter")
     parser.add_argument("--arm", action="append", default=[], metavar="NAME=IFACE", help="Add an arm, for example --arm left=can1 --arm right=can2; names left and right map to the Quest hands")
+    parser.add_argument("--mount", action="append", default=[], metavar="NAME=SPEC", help="How an arm is bolted down, for example --mount left=side_left@1.15; SPEC is upright, inverted, side_left, side_right or three rpy angles in degrees, optionally followed by @ and the height of the base above the floor in metres")
+    parser.add_argument("--gravity-scale", type=float, default=1.0, help="Fraction of the computed gravity feedforward to apply, between 0 and 1; lower it for the first power on after changing how an arm is mounted")
+    parser.add_argument("--pairing-ttl", type=int, default=300, metavar="SECONDS", help="How long a pairing code stays valid, 30 to 86400 seconds; the code is single use and guarded by five attempts a minute, so a longer window is reasonable when the headset is not next to the arm computer")
+    parser.add_argument("--motion-window", type=int, default=900, metavar="SECONDS", help="How long the allow motion permission lasts once granted, 60 to 14400 seconds")
     parser.add_argument("--list-can", action="store_true", help="List CAN interfaces with their driver and USB port, then exit")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--https-port", type=int, default=9443, help="HTTPS port for the Quest page")
@@ -58,6 +62,28 @@ def main():
         if not name or not iface:
             parser.error("--arm needs NAME=IFACE, for example left=can1")
         arms[name.strip()] = iface.strip()
+    from rebot_teleop.kinematics import parse_mount
+    mounts = {}
+    for item in args.mount:
+        name, _, spec = item.partition("=")
+        if not name or not spec:
+            parser.error("--mount needs NAME=SPEC, for example left=side_left@1.15")
+        try:
+            parse_mount(spec.strip())
+        except ValueError as error:
+            parser.error(str(error))
+        mounts[name.strip()] = spec.strip()
+    unknown = sorted(set(mounts) - set(arms or {"arm"}))
+    if unknown:
+        parser.error("No such arm for --mount: " + ", ".join(unknown))
+    if not 60 <= args.motion_window <= 14400:
+        parser.error("--motion-window must be between 60 and 14400 seconds")
+    os.environ["REBOT_TELEOP_MOTION_WINDOW"] = str(args.motion_window)
+    if not 30 <= args.pairing_ttl <= 86400:
+        parser.error("--pairing-ttl must be between 30 and 86400 seconds")
+    os.environ["REBOT_TELEOP_PAIRING_TTL"] = str(args.pairing_ttl)
+    if not 0.0 <= args.gravity_scale <= 1.0:
+        parser.error("--gravity-scale must be between 0 and 1")
     data = Path(args.data)
     os.environ["REBOT_TELEOP_CAN"] = detect_can() if args.can == "auto" else args.can
     print("Using CAN interface", os.environ["REBOT_TELEOP_CAN"])
@@ -75,8 +101,10 @@ def main():
     os.environ.setdefault("OMP_NUM_THREADS", "1")
     from rebot_teleop.server import create_app, lan_addresses
     if arms:
-        print("Arms:", ", ".join(f"{name} on {iface}" for name, iface in arms.items()))
-    app = create_app(data, data / ".env", arms=arms or None)
+        print("Arms:", ", ".join(f"{name} on {iface}" + (f" mounted {mounts[name]}" if name in mounts else "") for name, iface in arms.items()))
+    elif mounts:
+        print("Mount:", mounts.get("arm", ""))
+    app = create_app(data, data / ".env", arms=arms or None, mounts=mounts or None, gravity_scale=args.gravity_scale)
     configs = [uvicorn.Config(app, host=host, port=args.port, proxy_headers=False, access_log=False)]
     if args.lan:
         from rebot_teleop.tls import ensure_certificate

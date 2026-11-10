@@ -1,4 +1,5 @@
 import math
+import os
 import threading
 import time
 import numpy as np
@@ -13,7 +14,8 @@ RECOVERABLE_EXCESS = math.radians(15.0)
 TRACKING_LIMIT = math.radians(15.0)
 TRACKING_GRACE_S = 0.4
 FEEDBACK_TIMEOUT_S = 0.5
-TEMPERATURE_LIMIT_C = 80.0
+TEMPERATURE_WARN_C = float(os.environ.get("REBOT_TELEOP_TEMPERATURE_WARN", "75"))
+TEMPERATURE_LIMIT_C = float(os.environ.get("REBOT_TELEOP_TEMPERATURE_LIMIT", "95"))
 WIDTH_OPEN = 0.05
 ACCEL_DEG_S2 = 120.0
 STOP_ACCEL_DEG_S2 = 240.0
@@ -57,6 +59,7 @@ class RSArm:
         self.velocity = np.zeros(6)
         self.effort = np.zeros(6)
         self.temperatures = [None] * 7
+        self.temperature_warning = None
         self.current = 0.0
         self.connected = False
         self.zeroed = False
@@ -234,9 +237,11 @@ class RSArm:
         elif now - self.feedback_at > FEEDBACK_TIMEOUT_S:
             self._fail("Motor feedback stopped arriving")
             return
-        if any(t is not None and t > TEMPERATURE_LIMIT_C for t in self.temperatures):
-            self._fail("A motor is above the temperature limit")
+        hottest = max((t for t in self.temperatures if t is not None), default=None)
+        if hottest is not None and hottest > TEMPERATURE_LIMIT_C:
+            self._fail(f"A motor reached {hottest:.0f} C, above the {TEMPERATURE_LIMIT_C:.0f} C cutout")
             return
+        self.temperature_warning = f"A motor is at {hottest:.0f} C, above the {TEMPERATURE_WARN_C:.0f} C warning level" if hottest is not None and hottest > TEMPERATURE_WARN_C else None
         error = np.abs(self.measured[:6] - self.command[:6])
         if np.max(error) > TRACKING_LIMIT:
             if self.track_since is None:
@@ -355,7 +360,7 @@ class RSArm:
             return {
                 "kind": "rs", "channel": self.channel, "connected": self.connected, "zero_confirmed": self.zeroed,
                 "torque": self.torque, "fault": self.fault, "at_rest": self.connected and self.at_rest(),
-                "temperatures": list(self.temperatures), "gravity_nm": [round(float(v), 2) for v in self.tau[:6]], "gravity_scale": self.gravity_scale,
+                "temperatures": list(self.temperatures), "temperature_warning": self.temperature_warning, "temperature_warn_c": TEMPERATURE_WARN_C, "temperature_limit_c": TEMPERATURE_LIMIT_C, "gravity_nm": [round(float(v), 2) for v in self.tau[:6]], "gravity_scale": self.gravity_scale,
                 "tracking_deg": [round(math.degrees(float(v)), 1) for v in self.measured[:6] - self.command[:6]], "gripper_deg": round(math.degrees(self.measured[6]), 1), "gripper_range_deg": [round(math.degrees(self.gripper_closed), 1), round(math.degrees(self.gripper_open), 1)],
                 "limits_deg": [list(pair) for pair in LIMITS_DEG], "feedback_age_ms": round((time.monotonic() - self.feedback_at) * 1000) if self.feedback_at else None,
             }
