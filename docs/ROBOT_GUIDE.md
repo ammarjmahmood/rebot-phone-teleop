@@ -78,6 +78,7 @@ Every move is checked before anything moves: joint limits, the floor, keep out b
 * `robot.find_objects(camera, "red", z_range=(0.67, 0.80))` does capture, colour blobs and 3D location in one call. Parts of the robot itself (the collar under the head, the head, the arms) can match a colour, so always filter by height or position.
 * The overview camera exists only in the simulator. It is the easiest way to find objects there. On the real robot use the wrist cameras: move to the ready pose, capture, locate, then refine by capturing again from above the object.
 * Each wrist camera sits about 12 cm above the tip and looks down and inward toward the middle. Hold still while capturing.
+* The real robot can also have a fixed `torso` camera low on the post that sees both arms and the table at once. Use it to find objects and to check where each gripper is relative to them, then use the wrist cameras for the close approach. `locate` works on it only when its position is set with `--camera-pose torso=X,Y,Z,LOOK_X,LOOK_Y,LOOK_Z`; otherwise locate through a wrist camera.
 * The real wrist cameras are Innomaker USB (UVC) cameras. Their field of view is set with `REBOT_TELEOP_CAMERA_FOV` (horizontal degrees, default 80). Measure it once for accurate locations.
 
 ## Working on a task (develop, freeze, evaluate)

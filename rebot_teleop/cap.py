@@ -50,10 +50,10 @@ TOOLS = [
     },
     {
         "name": "look",
-        "description": "Return a picture from a camera: 'left' or 'right' wrist camera, or 'overview' in the simulator. Also returns the camera intrinsics and pose for use with robot.locate.",
+        "description": "Return a picture from a camera: 'left' or 'right' wrist camera, 'torso' for the fixed camera that sees both arms and the table on the real robot, or 'overview' in the simulator. Also returns the camera intrinsics and pose for use with robot.locate.",
         "input_schema": {
             "type": "object",
-            "properties": {"camera": {"type": "string", "enum": ["left", "right", "overview"]}},
+            "properties": {"camera": {"type": "string", "enum": ["left", "right", "torso", "overview"]}},
             "required": ["camera"],
             "additionalProperties": False,
         },
@@ -137,8 +137,8 @@ class Run:
             return [{"type": "text", "text": f"{'finished' if ok else 'FAILED'} in {took:.1f} s\n{tail(output) or '(no output)'}"}], not ok
         if name == "look":
             camera = args.get("camera") if isinstance(args, dict) else None
-            if camera not in {"left", "right", "overview"}:
-                return [{"type": "text", "text": "look needs camera 'left', 'right' or 'overview'"}], True
+            if camera not in {"left", "right", "torso", "overview"}:
+                return [{"type": "text", "text": "look needs camera 'left', 'right', 'torso' or 'overview'"}], True
             try:
                 data = self.robot._get(f"/api/camera/{camera}/capture")
             except RobotError as error:
@@ -212,7 +212,7 @@ class Run:
         return path
 
 
-CLI_PROMPT = """You drive a two arm robot through the rebot tools, Code as Policies style. The arms start in the pose the operator left them in: plan every move from that pose, and never send them home, to ready or to any preset pose unless the task asks for it. Before moving, call robot_guide if you have not, read the state and look through the wrist cameras; navigate by what the cameras show, looking again after each step. Write short Python policies against the robot API, run them with run_policy, and keep moves small and slow. When the task is done, or cannot be done, stop and reply with a short summary of what happened."""
+CLI_PROMPT = """You drive a two arm robot through the rebot tools, Code as Policies style. The arms start in the pose the operator left them in: plan every move from that pose, and never send them home, to ready or to any preset pose unless the task asks for it. Before moving, call robot_guide if you have not, read the state and look through the cameras: the torso camera, when there is one, sees both arms and the table, and the wrist cameras see close up; navigate by what the cameras show, looking again after each step. Write short Python policies against the robot API, run them with run_policy, and keep moves small and slow. When the task is done, or cannot be done, stop and reply with a short summary of what happened."""
 
 
 def clean_env():

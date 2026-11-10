@@ -154,7 +154,7 @@ def stop() -> str:
         return f"Error: {error}"
 
 
-@server.tool(description="Look through a camera and keep the picture for locate: 'left' or 'right' wrist camera, or 'overview' for a view of the whole simulated robot. yaw and pitch in degrees turn the overview camera around the robot: yaw 90 looks at the face, 180 at the left side, 0 at the right side, 270 at the back; pitch -80 looks from above. Overview pictures are 640x480, wrist pictures 320x240 in the simulator")
+@server.tool(description="Look through a camera and keep the picture for locate: 'left' or 'right' wrist camera, 'torso' for the fixed camera on the real robot that sees both arms and the table (when fitted), or 'overview' for a view of the whole simulated robot. yaw and pitch in degrees turn the overview camera around the robot: yaw 90 looks at the face, 180 at the left side, 0 at the right side, 270 at the back; pitch -80 looks from above. Overview pictures are 640x480, wrist pictures 320x240 in the simulator")
 def look(camera: str = "overview", yaw: float = 120.0, pitch: float = -15.0, distance: float = 1.9) -> Image | str:
     try:
         current = connect()

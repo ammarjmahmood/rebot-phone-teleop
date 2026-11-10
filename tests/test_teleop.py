@@ -490,3 +490,15 @@ def test_rest_button_returns_arm_to_its_rest_pose(tmp_path):
         again.arm.close()
 
     asyncio.run(scenario())
+
+
+def test_a_fixed_camera_that_belongs_to_no_arm_can_be_looked_through(tmp_path, monkeypatch):
+    from rebot_teleop.camera import look_at_pose, locate
+    pose = look_at_pose([0.1, 0.0, 0.9], [0.4, 0.0, 0.7])
+    assert np.allclose(pose[:3, 2], np.array([0.3, 0.0, -0.2]) / np.linalg.norm([0.3, 0.0, -0.2]))
+    assert pose[1, 0] < -0.99
+    shot = {"info": {"width": 640, "height": 480, "fx": 400.0, "fy": 400.0, "cx": 320.0, "cy": 240.0}, "world_from_camera": pose, "depth_m": None}
+    point = locate(shot, [(319.5, 239.5)], plane_z=0.7)[0]["xyz"]
+    assert point == pytest.approx([0.4, 0.0, 0.7], abs=1e-3)
+    with pytest.raises(ValueError):
+        locate({**shot, "world_from_camera": None}, [(10, 10)], plane_z=0.7)

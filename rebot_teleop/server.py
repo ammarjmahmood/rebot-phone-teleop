@@ -24,7 +24,7 @@ from rebot_teleop import policy
 from rebot_teleop import tasks
 from rebot_teleop.agent import Robot
 from rebot_teleop import cap
-from rebot_teleop.camera import SimCamera, SimView, UsbCamera, locate, optical_pose, sim_capture, usb_capture
+from rebot_teleop.camera import SimCamera, SimView, UsbCamera, locate, look_at_pose, optical_pose, sim_capture, usb_capture
 from fastapi.staticfiles import StaticFiles
 from rebot_teleop.auth import Auth, pairing_ttl
 from rebot_teleop.controller import TeleopController
@@ -170,6 +170,9 @@ def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, heb
     sim_view = SimView(sim) if sim else None
     camera_devices = json.loads(os.environ.get("REBOT_TELEOP_CAMERAS", "{}") or "{}")
     cameras = {}
+    fixed_poses = {}
+    for name, spec in (json.loads(os.environ.get("REBOT_TELEOP_CAMERA_POSES", "{}") or "{}")).items():
+        fixed_poses[name] = look_at_pose(spec["xyz"], spec["look_at"])
     gist_file = Path(data_dir) / "gist_id"
     token = auth.values.get("REBOT_TELEOP_GIST_TOKEN", "")
     gist = GistBookmark(token, gist_file.read_text().strip() if gist_file.exists() else auth.values.get("REBOT_TELEOP_GIST_ID", ""), gist_file) if tunnel and token else None
@@ -215,6 +218,9 @@ def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, heb
     @asynccontextmanager
     async def lifespan(app):
         app.state.nodes = {name: build(name, channel) for name, channel in arms.items()}
+        for name, device in camera_devices.items():
+            if name not in app.state.nodes:
+                cameras[name] = UsbCamera(device)
         for current in app.state.nodes.values():
             await current.start()
         if tunnel:
@@ -393,9 +399,16 @@ def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, heb
                 raise HTTPException(404, "Only the simulator has an overview camera")
             shot = await asyncio.to_thread(sim_capture, sim, "overview", 85, view_args(request))
         elif name not in cameras:
-            raise HTTPException(404, "No camera on that arm; cameras are " + ", ".join([*cameras, *(["overview"] if sim else [])]))
+            raise HTTPException(404, "No camera called that; cameras are " + ", ".join([*cameras, *(["overview"] if sim else [])]))
         elif sim and isinstance(cameras[name], SimCamera):
             shot = await asyncio.to_thread(sim_capture, sim, everything[name].arm.channel)
+        elif name not in everything:
+            shot = None
+            for _ in range(30):
+                shot = await asyncio.to_thread(usb_capture, cameras[name], fixed_poses.get(name), camera_fov)
+                if shot:
+                    break
+                await asyncio.sleep(0.1)
         else:
             current = everything[name]
             q = current.arm.q.copy()
@@ -419,7 +432,7 @@ def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, heb
     async def camera_capture(name: str, request: Request):
         actor(request)
         shot = await capture_from(request, name)
-        return {**shot["info"], "world_from_camera": np.round(shot["world_from_camera"], 5).tolist(), "has_depth": shot["depth_m"] is not None, "image_jpeg_base64": base64.b64encode(shot["jpeg"]).decode()}
+        return {**shot["info"], "world_from_camera": None if shot["world_from_camera"] is None else np.round(shot["world_from_camera"], 5).tolist(), "has_depth": shot["depth_m"] is not None, "image_jpeg_base64": base64.b64encode(shot["jpeg"]).decode()}
 
     @app.post("/api/camera/{name}/locate")
     async def camera_locate(name: str, request: Request):
@@ -523,7 +536,7 @@ def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, heb
         actor(request)
         camera = cameras.get(name)
         if camera is None:
-            raise HTTPException(404, "No camera on that arm")
+            raise HTTPException(404, "No camera called that")
         for _ in range(30):
             frame = await asyncio.to_thread(camera.frame)
             if frame:
@@ -536,7 +549,7 @@ def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, heb
         actor(request)
         camera = cameras.get(name)
         if camera is None:
-            raise HTTPException(404, "No camera on that arm")
+            raise HTTPException(404, "No camera called that")
 
         async def frames():
             last = None

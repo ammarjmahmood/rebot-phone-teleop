@@ -34,7 +34,8 @@ robot.say("raise left hand then wave")   plain word commands
 robot.stop()                             stop everything
 
 Seeing
-robot.capture(camera)                    (image HxWx3 uint8 RGB, info) for "left", "right" wrist cameras or "overview" (sim)
+robot.capture(camera)                    (image HxWx3 uint8 RGB, info) for "left", "right" wrist cameras, "torso" (a fixed camera
+                                         on the real robot looking at both arms and the table, when fitted) or "overview" (sim)
                                          info has fx, fy, cx, cy, width, height, world_from_camera (4x4, OpenCV axes)
 robot.locate(camera, [(u, v), ...], plane_z=None)
                                          world xyz for pixels of the last capture; depth in sim, else a plane at plane_z

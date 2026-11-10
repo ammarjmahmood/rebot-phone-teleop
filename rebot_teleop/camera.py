@@ -159,6 +159,23 @@ def optical_pose(position, rotation, offset=0.021):
     return pose
 
 
+def look_at_pose(xyz, target):
+    position = np.asarray(xyz, dtype=float)
+    forward = np.asarray(target, dtype=float) - position
+    if np.linalg.norm(forward) < 1e-6:
+        raise ValueError("A fixed camera needs a look_at point away from its position")
+    forward = forward / np.linalg.norm(forward)
+    right = np.cross(forward, [0.0, 0.0, 1.0])
+    if np.linalg.norm(right) < 1e-6:
+        right = np.array([0.0, -1.0, 0.0])
+    right = right / np.linalg.norm(right)
+    down = np.cross(forward, right)
+    pose = np.eye(4)
+    pose[:3, :3] = np.column_stack([right, down, forward])
+    pose[:3, 3] = position
+    return pose
+
+
 def sim_capture(world, channel, quality=85, view=None):
     after = time.monotonic()
     for _ in range(80):
@@ -184,6 +201,8 @@ def usb_capture(camera, pose, fov_horizontal_deg):
 
 def locate(capture, pixels, plane_z=None):
     info = capture["info"]
+    if capture.get("world_from_camera") is None:
+        raise ValueError("This camera's position is not set, so its pixels cannot be turned into positions; use a wrist camera for locate")
     pose = np.asarray(capture["world_from_camera"], dtype=float)
     points = []
     for u, v in pixels:

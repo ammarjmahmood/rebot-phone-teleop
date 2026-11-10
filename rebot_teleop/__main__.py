@@ -90,7 +90,8 @@ def main():
     parser.add_argument("--list-can", action="store_true", help="List CAN interfaces with their driver and USB port, then exit")
     parser.add_argument("--sim", nargs="?", const="gui", choices=["gui", "headless"], help="Drive simulated arms in PyBullet instead of the CAN bus; the same IK, gravity compensation, safety checks and Quest page run unchanged")
     parser.add_argument("--mount", action="append", default=[], metavar="NAME=X,Y,Z,ROLL,PITCH,YAW", help="Where an arm's base sits on the robot in metres and degrees, overriding the saved mount; left and right default to the side mounted post assembly")
-    parser.add_argument("--camera", action="append", default=[], metavar="NAME=DEVICE", help="USB wrist camera for an arm, for example --camera left=/dev/video0; in --sim each arm gets a rendered wrist camera")
+    parser.add_argument("--camera-pose", action="append", default=[], metavar="NAME=X,Y,Z,LOOK_X,LOOK_Y,LOOK_Z", help="Where a fixed camera sits and the point it looks at, in metres in the world frame, so locate works for it")
+    parser.add_argument("--camera", action="append", default=[], metavar="NAME=DEVICE", help="USB camera: an arm name for its wrist camera, for example --camera left=/dev/video0, or any other name for a fixed camera such as --camera torso=/dev/video2; in --sim each arm gets a rendered wrist camera")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--https-port", type=int, default=9443, help="HTTPS port for the Quest page")
     parser.add_argument("--lan", action="store_true", help="Listen on the network so phones and headsets can connect")
@@ -153,6 +154,16 @@ def main():
     if mounts:
         import json
         os.environ["REBOT_TELEOP_MOUNTS"] = json.dumps(mounts)
+    poses = {}
+    for item in args.camera_pose:
+        name, _, values = item.partition("=")
+        numbers = [float(v) for v in values.split(",")] if values else []
+        if not name or len(numbers) != 6:
+            parser.error("--camera-pose needs NAME=X,Y,Z,LOOK_X,LOOK_Y,LOOK_Z")
+        poses[name.strip()] = {"xyz": numbers[:3], "look_at": numbers[3:]}
+    if poses:
+        import json
+        os.environ["REBOT_TELEOP_CAMERA_POSES"] = json.dumps(poses)
     if args.sim:
         os.environ["REBOT_TELEOP_SIM"] = args.sim
         if not arms:
