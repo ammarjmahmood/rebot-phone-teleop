@@ -14,10 +14,15 @@ elif [ "$(uname -m)" = "x86_64" ]; then
 else
   echo "Skipping the simulator extra on $(uname -m); run the simulator on the PC and point agents at it with --url."
 fi
-if command -v uv >/dev/null 2>&1; then
-  uv pip install --python .venv/bin/python -e ".[${extras}]"
+UV="$(command -v uv || true)"
+for candidate in "$HOME/.local/bin/uv" "$HOME/.cargo/bin/uv"; do
+  if [ -z "$UV" ] && [ -x "$candidate" ]; then UV="$candidate"; fi
+done
+if [ -n "$UV" ]; then
+  "$UV" pip install --python .venv/bin/python -e ".[${extras}]"
 else
-  .venv/bin/pip install -e ".[${extras}]"
+  .venv/bin/python -m pip --version >/dev/null 2>&1 || .venv/bin/python -m ensurepip --upgrade
+  .venv/bin/python -m pip install -e ".[${extras}]"
 fi
 .venv/bin/python -c "import rebot_teleop.mcp_server, rebot_teleop.agent, rebot_teleop.dojo; print('robot agent packages ok')"
 if command -v claude >/dev/null 2>&1; then
