@@ -86,11 +86,20 @@ class TeleopNode:
     async def connect(self):
         if self.arm.connected:
             return
+        self.follow_usb_port()
         try:
             await asyncio.to_thread(self.arm.connect)
             self.fault = None
         except Exception as error:
             self.fault = f"Arm not reachable on {self.arm.channel}: {error}"
+
+    def follow_usb_port(self):
+        port = json.loads(os.environ.get("REBOT_TELEOP_CAN_PORTS", "{}") or "{}").get(self.name)
+        if not port or not hasattr(self.arm, "channel"):
+            return
+        from rebot_teleop.__main__ import can_ports
+        iface = next((name for name, found in can_ports().items() if found == port), None)
+        self.arm.channel = iface or f"missing-usb-{port}"
 
     async def monitor(self):
         while True:

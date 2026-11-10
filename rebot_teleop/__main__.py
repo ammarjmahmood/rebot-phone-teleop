@@ -23,6 +23,39 @@ def detect_can():
     return names[0] if names else "can0"
 
 
+def can_ports():
+    base = Path("/sys/class/net")
+    ports = {}
+    for path in sorted(base.iterdir()) if base.exists() else []:
+        try:
+            if (path / "type").read_text().strip() != "280" or not (path / "device").exists():
+                continue
+        except OSError:
+            continue
+        ports[path.name] = (path / "device").resolve().name.split(":")[0]
+    return ports
+
+
+def pin_arms(arms, saved, ports):
+    by_port = {port: iface for iface, port in ports.items()}
+    resolved = dict(arms)
+    notes = []
+    for name, port in saved.items():
+        if name not in resolved:
+            continue
+        iface = by_port.get(port)
+        if iface is None:
+            resolved[name] = f"missing-usb-{port}"
+            notes.append(f"{name}: its CAN adapter on USB {port} is not plugged in; the arm stays offline instead of using another adapter")
+        elif iface != resolved[name]:
+            notes.append(f"{name}: using {iface} (USB {port}) instead of {resolved[name]}, because adapter names changed")
+            resolved[name] = iface
+    used = [iface for iface in resolved.values() if not iface.startswith("missing")]
+    if len(used) != len(set(used)):
+        raise ValueError("Two arms point at the same CAN adapter: " + ", ".join(f"{n}={i}" for n, i in resolved.items()))
+    return resolved, notes
+
+
 def describe_can():
     base = Path("/sys/class/net")
     rows = []
@@ -66,9 +99,26 @@ def main():
     parser.add_argument("--pairing-ttl", type=int, default=300, metavar="SECONDS", help="How long a pairing code stays valid, 30 to 86400 seconds; codes are single use and limited to five attempts a minute")
     parser.add_argument("--motion-window", type=int, default=900, metavar="SECONDS", help="How long Allow phone and headset motion lasts once ticked, 60 to 14400 seconds")
     parser.add_argument("--data", default=str(Path.home() / ".rebot-teleop"), help="Folder for settings, secrets and the local certificate")
+    parser.add_argument("--can-port", action="append", default=[], metavar="NAME=USBPORT", help="Tie an arm to the USB port of its CAN adapter, for example --can-port left=1-2.1.1.4; saved in the data folder so CAN names that change on replug never swap the arms")
     args = parser.parse_args()
+    import json
+    port_file = Path(args.data) / "can_ports.json"
+    saved_ports = json.loads(port_file.read_text()) if port_file.exists() else {}
+    if args.can_port:
+        for item in args.can_port:
+            name, _, port = item.partition("=")
+            if not name or not port:
+                parser.error("--can-port needs NAME=USBPORT, for example left=1-2.1.1.4")
+            saved_ports[name.strip()] = port.strip()
+        port_file.parent.mkdir(parents=True, exist_ok=True)
+        port_file.write_text(json.dumps(saved_ports, indent=1))
+        print("Saved arm to USB port map in", port_file, saved_ports)
     if args.list_can:
         print("\n".join(describe_can()))
+        ports = can_ports()
+        for name, port in saved_ports.items():
+            iface = next((i for i, p in ports.items() if p == port), None)
+            print(f"{name:8} pinned to USB {port}: {iface or 'adapter not plugged in'}")
         return
     arms = {}
     for item in args.arm:
@@ -76,6 +126,14 @@ def main():
         if not name or not iface:
             parser.error("--arm needs NAME=IFACE, for example left=can1")
         arms[name.strip()] = iface.strip()
+    if saved_ports and arms and not args.sim:
+        try:
+            arms, notes = pin_arms(arms, saved_ports, can_ports())
+        except ValueError as error:
+            parser.error(str(error))
+        for note in notes:
+            print(note)
+        os.environ["REBOT_TELEOP_CAN_PORTS"] = json.dumps({name: port for name, port in saved_ports.items() if name in arms})
     mounts = {}
     for item in args.mount:
         name, _, values = item.partition("=")
