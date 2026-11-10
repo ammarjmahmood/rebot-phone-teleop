@@ -599,6 +599,16 @@ def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, heb
             current.reset()
         return {"status": "reset"}
 
+    @app.post("/api/rest")
+    async def rest(request: Request):
+        device(request)
+        body = await body_of(request)
+        current = pick(request, body.get("arm"))
+        if body.get("save"):
+            return current.save_rest()
+        await current.rest()
+        return current.status()
+
     @app.post("/api/release")
     async def release(request: Request):
         device(request)

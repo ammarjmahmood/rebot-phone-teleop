@@ -457,3 +457,36 @@ def test_gist_bookmark_creates_then_updates(tmp_path):
     gist.publish("https://other-name-99.trycloudflare.com")
     assert calls[1][0] == "PATCH" and calls[1][1].endswith("/gists/abc123")
     assert gist.status == "https://gist.github.com/abc123"
+
+
+def test_rest_button_returns_arm_to_its_rest_pose(tmp_path):
+    async def scenario():
+        node, buses = await ready(tmp_path, pose_deg=(10, 60, 80, 5, 10, 20))
+        try:
+            assert np.allclose(node.rest_q, 0, atol=0.02)
+            saved = node.save_rest()
+            assert saved["rest_deg"] == pytest.approx([10, 60, 80, 5, 10, 20], abs=0.5)
+            node.arm.enabled = True
+            node.arm.write(np.radians([0, 40, 60, 0, 20, 0]), 0.02)
+            await settle(node)
+            node.arm.stop()
+            quest = node.controllers["quest"]
+            quest.source.push([0, 1, 0], yaw(0.0), {"b1": 0, "b9": 0})
+            await quest.start(OWNER)
+            for _ in range(10):
+                quest.source.push([0, 1, 0], yaw(0.0), {"b1": 0, "b9": 1})
+                await asyncio.sleep(0.03)
+            for _ in range(300):
+                await asyncio.sleep(0.02)
+                if node.motion and node.motion.done() and not node.arm.moving:
+                    break
+            assert np.allclose(np.degrees(node.arm.q), [10, 60, 80, 5, 10, 20], atol=1.0)
+            assert node.fault is None
+        finally:
+            await node.close()
+        build, _, _ = make_node(tmp_path)
+        again = build()
+        assert np.degrees(again.rest_q) == pytest.approx([10, 60, 80, 5, 10, 20], abs=0.5)
+        again.arm.close()
+
+    asyncio.run(scenario())

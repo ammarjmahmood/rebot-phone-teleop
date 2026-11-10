@@ -49,6 +49,8 @@ class TeleopNode:
         self.mount = mount_for(name, self.settings)
         self.kin = Kinematics(ASSETS / "rebot_rs.urdf", mount_placement(**self.mount) if self.mount else None)
         self.home_q = np.radians(home_for(name, self.settings))
+        saved_rest = self.settings.get("rest_deg")
+        self.rest_q = np.radians(saved_rest) if saved_rest else None
         self.base_keep_out = list(KEEP_OUT) if self.mount and self.mount == MOUNTS.get(name) else []
         self.kin.keep_out = list(self.base_keep_out)
         self.arm = arm or RSArm(channel, controller_factory=controller_factory, gripper_open_deg=270.0, gravity=self.kin.gravity_function())
@@ -173,6 +175,8 @@ class TeleopNode:
             await asyncio.to_thread(self.arm.confirm_zero, True)
         if not self.arm.torque:
             await asyncio.to_thread(self.arm.enable)
+        if self.rest_q is None:
+            self.rest_q = np.clip(np.asarray(self.arm.q, dtype=float), self.kin.lower, self.kin.upper)
         self.fault = None
         if go_home:
             await self.home()
@@ -196,6 +200,18 @@ class TeleopNode:
 
     async def home(self):
         return await self.move_to(self.home_q, reason="Homing")
+
+    async def rest(self):
+        if self.rest_q is None:
+            raise ValueError("Power the arm on first so it knows its rest pose")
+        return await self.move_to(self.rest_q, reason="Returning to rest")
+
+    def save_rest(self):
+        if not self.arm.connected:
+            raise ValueError("The arm is not connected")
+        self.rest_q = np.clip(np.asarray(self.arm.q, dtype=float), self.kin.lower, self.kin.upper)
+        self.settings.set("rest_deg", [round(math.degrees(v), 2) for v in self.rest_q])
+        return self.status()
 
     async def move_to(self, goal, width=None, speed=HOME_SPEED, reason="Moving"):
         self.require_ready()
@@ -279,12 +295,17 @@ class TeleopNode:
             await asyncio.sleep(1.0 / HAND_GUIDE_HZ)
         self.hand_guide = False
 
-    async def home_with(self, controller, principal):
+    async def home_with(self, controller, principal, goal="home"):
         resume = controller.active
         if resume:
-            await controller.stop("Homing", keep_source=True)
+            await controller.stop("Homing" if goal == "home" else "Returning to rest", keep_source=True)
         try:
-            await self.home()
+            if goal == "rest":
+                await self.rest()
+            else:
+                await self.home()
+        except ValueError as error:
+            self.fault = str(error)
         finally:
             if resume and not self.estopped and self.arm.torque and not self.arm.fault:
                 try:
@@ -307,6 +328,7 @@ class TeleopNode:
             **arm, "owner": self.owner, "estopped": self.estopped, "fault": self.fault or arm["fault"], "arm_fault": arm["fault"], "homing": bool(self.motion and not self.motion.done()),
             "joints_deg": [round(math.degrees(v), 1) for v in self.arm.q], "remote_seconds": max(0, round(self.remote_until - time.monotonic())),
             "controllers": {name: controller.status() for name, controller in self.controllers.items()}, "mount": self.mount, "home_deg": [round(math.degrees(v), 1) for v in self.home_q],
+            "rest_deg": None if self.rest_q is None else [round(math.degrees(v), 1) for v in self.rest_q],
             "hand_guide": self.hand_guide, "ready": bool(arm["connected"] and arm["torque"] and not arm["fault"] and not self.estopped and not self.fault), **self.tip_status(),
         }
 

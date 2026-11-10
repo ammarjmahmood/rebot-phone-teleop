@@ -65,7 +65,7 @@ function onFrame(time, frame) {
     const pad = source.gamepad;
     const button = i => pad && pad.buttons[i] ? pad.buttons[i] : {pressed: false, value: 0};
     const p = pose.transform.position, q = pose.transform.orientation;
-    hands[source.handedness] = {position: [p.x, p.y, p.z], quaternion_wxyz: [q.w, q.x, q.y, q.z], inputs: {b1: button(1).value > 0.5 ? 1 : 0, grip: 1 - button(0).value, b8: button(5).pressed ? 1 : 0}};
+    hands[source.handedness] = {position: [p.x, p.y, p.z], quaternion_wxyz: [q.w, q.x, q.y, q.z], inputs: {b1: button(1).value > 0.5 ? 1 : 0, grip: 1 - button(0).value, b8: button(5).pressed ? 1 : 0, b9: button(4).pressed ? 1 : 0}};
     pads[source.handedness] = pad;
   }
   if (!Object.keys(hands).length) return;

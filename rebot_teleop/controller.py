@@ -93,7 +93,7 @@ class TeleopController:
         self.mode = None
         self.note = None
         sample = self.source.latest()
-        self.buttons = {key: bool(sample[3].get(key)) for key in ("b2", "b3", "b8")} if sample else {}
+        self.buttons = {key: bool(sample[3].get(key)) for key in ("b2", "b3", "b8", "b9")} if sample else {}
         if self.frame == "align":
             self.align_pending = True
             try:
@@ -207,8 +207,8 @@ class TeleopController:
         sample = self.source.latest()
         fresh = sample is not None and now - sample[0] < self.fresh_s
         inputs = sample[3] if fresh else {}
-        rising = {key for key in ("b2", "b3", "b8") if inputs.get(key) and not self.buttons.get(key)}
-        self.buttons = {key: bool(inputs.get(key)) for key in ("b2", "b3", "b8")}
+        rising = {key for key in ("b2", "b3", "b8", "b9") if inputs.get(key) and not self.buttons.get(key)}
+        self.buttons = {key: bool(inputs.get(key)) for key in ("b2", "b3", "b8", "b9")}
         if fresh:
             node.heartbeat_at = now
         if not fresh or node.arm.fault or node.estopped:
@@ -247,6 +247,10 @@ class TeleopController:
         if "b8" in rising and not down and self.principal is not None:
             self.release()
             asyncio.get_running_loop().create_task(node.home_with(self, self.principal))
+            return
+        if "b9" in rising and not down and self.principal is not None:
+            self.release()
+            asyncio.get_running_loop().create_task(node.home_with(self, self.principal, goal="rest"))
             return
         self.pressed_samples = self.pressed_samples + 1 if down else 0
         if not down:
