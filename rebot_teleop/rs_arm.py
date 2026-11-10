@@ -67,6 +67,7 @@ class RSArm:
         self.fault = None
         self.feedback_at = 0.0
         self.track_since = None
+        self.offset = np.zeros(7)
 
     @property
     def q(self):
@@ -115,7 +116,23 @@ class RSArm:
         self.connected = True
         self.zeroed = False
         self.fault = None
+        self.offset = np.zeros(7)
+        raw = self.read_positions()
+        self.offset = self.wrap_offsets(raw)
         self.read_positions()
+
+    def wrap_offsets(self, raw):
+        offsets = np.zeros(7)
+        for index in range(6):
+            low = self.lower[index] - RECOVERABLE_EXCESS
+            high = self.upper[index] + RECOVERABLE_EXCESS
+            if low <= raw[index] <= high:
+                continue
+            for turn in (2 * math.pi, -2 * math.pi):
+                if low <= raw[index] + turn <= high:
+                    offsets[index] = turn
+                    break
+        return offsets
 
     def read_positions(self):
         if not self.connected:
@@ -124,7 +141,7 @@ class RSArm:
             values = [motor.robstride_get_param_f32(0x7019, 500) for motor in self.motors]
             if not all(math.isfinite(value) for value in values):
                 raise ValueError("Position feedback is not finite")
-            self.measured = np.array(values, dtype=float)
+            self.measured = np.array(values, dtype=float) + self.offset
             self.feedback_at = time.monotonic()
             return self.measured.copy()
 
@@ -157,8 +174,8 @@ class RSArm:
             self.rate = np.zeros(7)
             self.speeds = self.default_speeds.copy()
             self.braking = False
-            for motor, position, (kp, kd) in zip(self.motors, positions, GAINS):
-                motor.send_mit(float(position), 0.0, kp, kd, 0.0)
+            for motor, position, offset, (kp, kd) in zip(self.motors, positions, self.offset, GAINS):
+                motor.send_mit(float(position - offset), 0.0, kp, kd, 0.0)
             self.controller.enable_all()
             self.torque = True
             self.fault = None
@@ -178,8 +195,8 @@ class RSArm:
                     if self.gravity is not None and self.gravity_scale:
                         torque = np.asarray(self.gravity(self.measured[:6])) * self.gravity_scale
                         self.tau[:6] = np.clip(np.nan_to_num(torque), -np.array(GRAVITY_LIMIT_NM), GRAVITY_LIMIT_NM)
-                    for motor, position, rate, tau, (kp, kd) in zip(self.motors, self.command, self.rate, self.tau, GAINS):
-                        motor.send_mit(float(position), float(rate), kp, kd, float(tau))
+                    for motor, position, offset, rate, tau, (kp, kd) in zip(self.motors, self.command, self.offset, self.rate, self.tau, GAINS):
+                        motor.send_mit(float(position - offset), float(rate), kp, kd, float(tau))
                     self._feedback(tick % 100 == 0)
             except Exception as error:
                 self._fail(f"Motor communication failed: {error}")
@@ -222,7 +239,7 @@ class RSArm:
             state = motor.get_state()
             if state is None or not math.isfinite(state.pos):
                 continue
-            self.measured[index] = state.pos
+            self.measured[index] = state.pos + self.offset[index]
             fresh = True
             if index < 6:
                 self.velocity[index] = state.vel if math.isfinite(state.vel) else 0.0
@@ -369,7 +386,7 @@ class RSArm:
     def status(self):
         with self.lock:
             return {
-                "kind": "rs", "channel": self.channel, "connected": self.connected, "zero_confirmed": self.zeroed,
+                "kind": "rs", "channel": self.channel, "wrap_offset_deg": [round(math.degrees(v)) for v in self.offset[:6]], "connected": self.connected, "zero_confirmed": self.zeroed,
                 "torque": self.torque, "fault": self.fault, "at_rest": self.connected and self.at_rest(),
                 "temperatures": list(self.temperatures), "temperature_warning": self.temperature_warning(), "temperature_limits_c": [TEMPERATURE_WARN_C, TEMPERATURE_LIMIT_C, TEMPERATURE_RESUME_C], "gravity_nm": [round(float(v), 2) for v in self.tau[:6]], "gravity_scale": self.gravity_scale,
                 "tracking_deg": [round(math.degrees(float(v)), 1) for v in self.measured[:6] - self.command[:6]], "gripper_deg": round(math.degrees(self.measured[6]), 1), "gripper_range_deg": [round(math.degrees(self.gripper_closed), 1), round(math.degrees(self.gripper_open), 1)],

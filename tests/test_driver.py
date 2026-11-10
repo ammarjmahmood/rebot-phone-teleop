@@ -292,3 +292,58 @@ def test_gravity_feedforward_is_sent_and_capped():
         assert any(t == ("j3", pytest.approx(6.0)) for t in torques if isinstance(t, tuple))
     finally:
         arm.close()
+
+
+def wrapped_arm(raw_deg):
+    buses = []
+
+    def factory(channel):
+        bus = FakeBus(channel)
+        original = bus.add_robstride_motor
+
+        def add(motor_id, host, model):
+            motor = original(motor_id, host, model)
+            motor.pos = math.radians(raw_deg[motor_id - 1])
+            return motor
+
+        bus.add_robstride_motor = add
+        buses.append(bus)
+        return bus
+
+    return RSArm(controller_factory=factory), buses
+
+
+def test_a_joint_resting_past_the_encoder_wrap_reads_inside_its_range_and_holds_still():
+    raw = [83.9, -182.1, 161.5, 6.3, -19.1, -178.5, 30.0]
+    arm, buses = wrapped_arm(raw)
+    arm.connect()
+    assert math.degrees(arm.offset[1]) == pytest.approx(360.0)
+    assert np.count_nonzero(arm.offset) == 1
+    assert math.degrees(arm.q[1]) == pytest.approx(177.9, abs=0.01)
+    arm.confirm_zero(True)
+    arm.enable()
+    try:
+        time.sleep(0.05)
+        motor = buses[0].motors[2]
+        assert math.degrees(motor.commands[0]) == pytest.approx(-182.1, abs=0.01)
+        assert math.degrees(motor.commands[-1]) == pytest.approx(-182.1, abs=0.01)
+        assert math.degrees(motor.pos) == pytest.approx(-182.1, abs=0.01)
+        assert math.degrees(arm.q[1]) == pytest.approx(177.9, abs=0.01)
+        assert arm.fault is None
+        arm.enabled = True
+        arm.write(np.radians([83.9, 172.0, 161.5, 6.3, -19.1, -178.5]), 0.02)
+        assert wait_for(lambda: abs(math.degrees(motor.pos) + 188.0) < 0.05, timeout=3.0)
+        assert math.degrees(arm.q[1]) == pytest.approx(172.0, abs=0.05)
+    finally:
+        arm.running.clear()
+
+
+def test_joints_inside_their_range_get_no_offset_and_true_outliers_are_still_refused():
+    arm, _ = wrapped_arm([-88.1, 176.7, 160.1, 11.0, 1.9, 153.6, 30.0])
+    arm.connect()
+    assert not np.any(arm.offset)
+    arm, _ = wrapped_arm([0.0, 90.0, 300.0, 0.0, 0.0, 0.0, 0.0])
+    arm.connect()
+    assert not np.any(arm.offset)
+    with pytest.raises(ValueError, match="outside their range"):
+        arm.confirm_zero(True)
