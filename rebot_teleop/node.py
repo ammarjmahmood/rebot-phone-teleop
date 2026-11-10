@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 import numpy as np
 from rebot_teleop.kinematics import Kinematics, mount_placement
-from rebot_teleop.rs_arm import RSArm
+from rebot_teleop.rs_arm import RECOVERABLE_EXCESS, RSArm
 from rebot_teleop.settings import Settings
 
 
@@ -190,7 +190,7 @@ class TeleopNode:
     def planning_start(self):
         start = np.asarray(self.arm.q, dtype=float).copy()
         excess = np.maximum(self.kin.lower - start, start - self.kin.upper)
-        if np.any(excess > math.radians(15)):
+        if np.any(excess > RECOVERABLE_EXCESS):
             joint = int(np.argmax(excess))
             raise ValueError(f"Joint {joint + 1} is {math.degrees(excess[joint]):.1f} degrees past its limit; check the zero calibration in MotorBridge Studio")
         return np.clip(start, self.kin.lower, self.kin.upper)

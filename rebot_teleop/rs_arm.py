@@ -1,3 +1,4 @@
+import os
 import math
 import threading
 import time
@@ -9,7 +10,7 @@ HOST_ID = 0xFD
 GAINS = ((50.0, 2.0), (100.0, 4.0), (100.0, 4.0), (40.0, 2.0), (40.0, 1.5), (40.0, 1.5), (12.0, 0.05))
 LIMITS_DEG = ((-155.0, 155.0), (-3.0, 175.0), (-3.0, 175.0), (-85.0, 85.0), (-85.0, 85.0), (-179.0, 179.0))
 ZERO_TOLERANCE = math.radians(6.0)
-RECOVERABLE_EXCESS = math.radians(15.0)
+RECOVERABLE_EXCESS = math.radians(min(45.0, max(0.0, float(os.environ.get("REBOT_TELEOP_LIMIT_SLACK_DEG", "15")))))
 TRACKING_LIMIT = math.radians(15.0)
 TRACKING_GRACE_S = 0.4
 FEEDBACK_TIMEOUT_S = 0.5
@@ -157,7 +158,7 @@ class RSArm:
         if anywhere:
             outside = [i + 1 for i, value in enumerate(positions[:6]) if value < self.lower[i] - RECOVERABLE_EXCESS or value > self.upper[i] + RECOVERABLE_EXCESS]
             if outside:
-                raise ValueError("Joints " + ", ".join(map(str, outside)) + " read more than 15 degrees outside their range; check the zero calibration in MotorBridge Studio before powering on")
+                raise ValueError("Joints " + ", ".join(map(str, outside)) + " read more than " + f"{math.degrees(RECOVERABLE_EXCESS):.0f}" + " degrees outside their range; check the zero calibration in MotorBridge Studio before powering on")
             self.zeroed = True
             return positions
         far = [i + 1 for i, value in enumerate(positions) if abs(value) > ZERO_TOLERANCE]
