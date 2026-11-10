@@ -12,3 +12,4 @@ ios/**/build/
 xcuserdata/
 ios/**/Sources/Info.plist
 results/
+meshes/
