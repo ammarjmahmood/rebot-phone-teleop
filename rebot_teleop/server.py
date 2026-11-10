@@ -824,7 +824,7 @@ def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, heb
             "running": state["running"], "instruction": state["instruction"], "model": state["model"], "effort": state["effort"],
             "result": state["result"], "saved": state["saved"], "events": state["events"][after:], "next": len(state["events"]),
             "key": bool(shutil.which("claude") or (Path.home() / ".local" / "bin" / "claude").exists()),
-            "default_model": cap.DEFAULT_MODEL, "efforts": cap.EFFORTS,
+            "default_model": "", "efforts": cap.EFFORTS,
         }
 
     @app.get("/api/cap")
@@ -840,11 +840,11 @@ def create_app(data_dir: Path, env_path: Path, arms=None, node_factory=None, heb
         if state["running"]:
             raise ValueError("A policy is already running; stop it first")
         instruction = str(body.get("instruction", "")).strip()
-        model = str(body.get("model") or cap.DEFAULT_MODEL).strip()
+        model = str(body.get("model") or "").strip()
         effort = str(body.get("effort") or "high")
         if not instruction or len(instruction) > 2000:
             raise ValueError("Type what the arms should do")
-        if not re.fullmatch(r"[a-z0-9][a-z0-9.\-]{1,80}", model):
+        if model and not re.fullmatch(r"[a-z0-9][a-z0-9.\-\[\]]{1,80}", model):
             raise ValueError("That model name does not look right")
         if effort not in cap.EFFORTS:
             raise ValueError("Choose an effort: " + ", ".join(cap.EFFORTS))

@@ -207,7 +207,7 @@ class Run:
             return None
         path = Path(path) if path else ROOT / "policies" / "cap" / f"{time.strftime('%Y%m%d_%H%M%S')}.py"
         path.parent.mkdir(parents=True, exist_ok=True)
-        header = f"# Code as policy by {self.model}: {self.instruction}\n# Run again with: python -m rebot_teleop.agent {path}\n"
+        header = f"# Code as policy by {getattr(self, 'label', self.model)}: {self.instruction}\n# Run again with: python -m rebot_teleop.agent {path}\n"
         path.write_text(header + "\n\n# next step\n".join(self.scripts) + "\n")
         return path
 
@@ -240,7 +240,7 @@ class CliRun:
         claude = shutil.which("claude") or str(Path.home() / ".local" / "bin" / "claude")
         config = {"mcpServers": {"rebot": {"command": "bash", "args": [str(ROOT / "scripts" / "rebot_mcp.sh")], "env": {"REBOT_URL": self.url}}}}
         return [
-            claude, "-p", self.instruction, "--model", self.model, "--effort", self.effort,
+            claude, "-p", self.instruction, *(["--model", self.model] if self.model else []), "--effort", self.effort,
             "--output-format", "stream-json", "--verbose", "--max-turns", str(self.max_turns),
             "--strict-mcp-config", "--mcp-config", json.dumps(config), "--tools", "",
             "--allowedTools", "mcp__rebot__*", "--permission-mode", "dontAsk",
@@ -267,6 +267,12 @@ class CliRun:
         content = block.get("content")
         parts = content if isinstance(content, list) else [{"type": "text", "text": str(content or "")}]
         text = "\n".join(part.get("text", "") for part in parts if part.get("type") == "text").strip()
+        try:
+            wrapped = json.loads(text)
+            if isinstance(wrapped, dict) and isinstance(wrapped.get("result"), str) and len(wrapped) == 1:
+                text = wrapped["result"].strip()
+        except ValueError:
+            pass
         for part in parts:
             if part.get("type") == "image":
                 self.emit("image", f"Looked through the {args.get('camera', 'overview')} camera", image=part.get("source", {}).get("data", ""))
@@ -277,8 +283,9 @@ class CliRun:
             self.emit("output", text[-6000:], ok=not failed)
 
     def run(self):
-        self.emit("info", f"{self.model} through the Claude CLI, effort {self.effort}")
-        self.emit("thinking", f"{self.model} is starting")
+        self.label = self.model or "the CLI default model"
+        self.emit("info", f"{self.label} through the Claude CLI, effort {self.effort}")
+        self.emit("thinking", "Starting")
         try:
             self.process = subprocess.Popen(self.command(), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=clean_env(), cwd=ROOT, bufsize=1)
         except OSError as error:
@@ -299,19 +306,22 @@ class CliRun:
                 for block in event.get("message", {}).get("content", []):
                     if block.get("type") == "text" and block.get("text", "").strip():
                         self.summary = block["text"].strip()
-                        self.emit("text", self.summary, model=event.get("message", {}).get("model", self.model))
+                        self.emit("text", self.summary, model=event.get("message", {}).get("model", self.label))
                     elif block.get("type") == "tool_use":
                         self.tool_use(block)
-                self.emit("thinking", f"{self.model} is working")
+                self.emit("thinking", "Working")
             elif kind == "user":
                 content = event.get("message", {}).get("content", [])
                 for block in content if isinstance(content, list) else []:
                     if block.get("type") == "tool_result":
                         self.tool_result(block)
-                self.emit("thinking", f"{self.model} is thinking")
+                self.emit("thinking", "Thinking")
             elif kind == "result":
                 result = event
             elif kind == "system" and event.get("subtype") == "init":
+                if event.get("model"):
+                    self.label = event["model"]
+                    self.emit("info", f"Model: {self.label}")
                 servers = {server.get("name"): server.get("status") for server in event.get("mcp_servers", [])}
                 if servers.get("rebot") != "connected":
                     self.emit("error", f"The robot tools did not connect: {servers.get('rebot')}")

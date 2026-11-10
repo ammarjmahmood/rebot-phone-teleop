@@ -43,8 +43,8 @@ select{font:inherit;padding:8px;border:1px solid #c8d6d0;border-radius:6px;backg
 <button type="button">Go to the ready pose and open both grippers</button>
 </div>
 <div class="settings">
-<label>Model <input id="model" list="models" autocomplete="off" spellcheck="false"></label>
-<datalist id="models"><option value="claude-fable-5-2"><option value="claude-opus-5-5"><option value="claude-sonnet-5-5"><option value="claude-haiku-5-5"></datalist>
+<label>Model <input id="model" list="models" autocomplete="off" spellcheck="false" placeholder="Your CLI default (set with /model)"></label>
+<datalist id="models"><option value="claude-fable-5-1"><option value="claude-fable-5-2"><option value="claude-opus-5-5"><option value="claude-sonnet-5-5"><option value="claude-haiku-5-5"></datalist>
 <label>Effort <select id="effort"></select></label>
 </div>
 <div class="row"><button class="primary" id="run" type="submit">Run</button><span id="state" class="state" style="align-self:center"></span></div>

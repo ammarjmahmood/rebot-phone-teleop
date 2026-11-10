@@ -88,7 +88,7 @@ async function start() {
   for (const level of view.efforts) effort.append(new Option(level, level, false, level === 'high'));
   let saved = '';
   try { saved = localStorage.getItem('cap-model') || ''; } catch {}
-  $('model').value = saved || view.default_model;
+  $('model').value = saved;
   if (view.events.length && view.instruction) $('instruction').value = view.instruction;
   show(view);
   const state = await api('state').catch(() => ({}));
