@@ -27,13 +27,14 @@ To regenerate after changing a number: `pip install manifold3d trimesh` then `py
 
 ## Print (Bambu P1S, PETG, both arms in two plates)
 
-Everything for both arms does not fit on one 256 mm plate: the two drums and the two brackets alone are more area than the bed. `print/paracord/counterbalance_paracord_both_arms_PETG_P1S.3mf` is one project with three plates, about 10.6 hours and 422 g of PETG in total:
+Everything for both arms does not fit on one 256 mm plate: the two drums and the two brackets alone are more area than the bed. It prints as two single plate projects in `print/plates/`:
 
-| Plate | Parts | Time |
-|---|---|---|
-| 1 | right and left top brackets, two clamp plates, two pulley wheels | 5.7 h |
-| 2 | drum for one arm (both halves) | 2.4 h |
-| 3 | drum for the other arm (both halves) | 2.4 h |
+| Project | Parts | Time | PETG |
+|---|---|---|---|
+| `counterbalance_A_brackets_wheels_clamps.3mf` | right and left top brackets, two clamp plates, two pulley wheels | 5 h 51 min | 209 g |
+| `counterbalance_B_drum_print_twice.3mf` | one drum (both halves); print it twice, once per arm | 2.4 h each | about 94 g each |
+
+Single plate projects, because Bambu Studio and its command line slicer disagree on where plates 2 and 3 sit, which put a drum off its plate.
 
 Settings on every plate: Bambu PETG Basic, 0.24 mm layers, 4 walls, 25% gyroid, no brim, no support, textured PEI plate. The pulley wheel is the bearing free version that turns on the M8 bolt; `pulley_sheave_608.stl` takes a 608 skateboard bearing if you have one. The spring version also needs `spring_anchor_right.stl`, `spring_anchor_left.stl` and two `anchor_clamp_plate.stl`.
 
