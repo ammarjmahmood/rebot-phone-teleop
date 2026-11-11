@@ -43,11 +43,11 @@ Settings on every plate: Bambu PETG Basic, 0.24 mm layers, 4 walls, 25% gyroid, 
 
 | Item | Qty | Where | Cost (CAD) |
 |---|---|---|---|
-| [Everbilt 550 paracord, 50 ft](https://www.homedepot.ca/product/everbilt-diamond-braid-rope-550-paracord-medium-duty/1001927620), rated 110 lb | 1 | Home Depot, SKU 1001927620 | about $10 (estimate) |
-| Paulin M5-0.8 x 20 mm hex cap screw + M5 hex nut | 8 each | Home Depot, Paulin metric drawer | about $6 (estimate) |
-| Paulin M8-1.25 x 40 mm hex cap screw, M8 nylon lock nut, 2 M8 washers | 2 sets | Home Depot, Paulin metric drawer | about $4 (estimate) |
-| Paulin M4-0.7 x 30 mm screw + M4 hex nut | 4 each | Home Depot, Paulin metric drawer | about $3 (estimate) |
-| [Everbilt carabiner clip set](https://www.homedepot.ca/product/everbilt-eb-link-hook-carabiner-clip-set/1001846154) | 1 | Home Depot, SKU 1001846154 | about $4 |
+| [Everbilt 550 paracord, 50 ft](https://www.homedepot.ca/product/everbilt-diamond-braid-rope-550-paracord-medium-duty/1001927620), rated 110 lb | 1 | Home Depot SKU 1001927620, back of aisle 12 at Leaside | price in store only, about $10 |
+| [Paulin M5-0.8 x 20 mm hex cap screw](https://www.homedepot.ca/product/paulin-m5-80-x-20mm-class-8-8-metric-hex-cap-screw-din-933-zinc-plated/1000128425) + M5 hex nut | 8 each | SKU 1000128425, aisle 16 bay 015 at Leaside | $0.47 each, about $6 with nuts |
+| [Paulin M8-1.25 x 40 mm hex cap screw](https://www.homedepot.ca/product/paulin-m8-1-25-x-40mm-class-8-8-metric-hex-cap-screw-din-931-partial-thread-zinc-plated/1000135048), M8 nylon lock nut, 2 M8 washers | 2 sets | SKU 1000135048, aisle 16 bay 015 at Leaside | $1.17 each, about $4 with nuts and washers |
+| Paulin M4-0.7 screw, 40 to 50 mm long, + M4 hex nut | 4 each | same Paulin drawers, aisle 16 | about $3 |
+| [Everbilt carabiner clip set](https://www.homedepot.ca/product/everbilt-eb-link-hook-carabiner-clip-set/1001846154) | 1 | SKU 1001846154 | $4.98 |
 | Weight, 6.8 kg per arm | 2 | see below | $0 to $76 |
 | PETG for the three plates | 422 g | your spool | about $11 |
 
@@ -61,7 +61,7 @@ Spring version instead of weights, both arms: 2 extension springs of about 0.62 
 
 Do this with the arm powered off and supported.
 
-**Step 1. Drum.** Close the two drum halves around the square base of the shoulder bracket, slots facing outward away from the post. Drop an M4 nut in each nut slot, put the M4 x 30 screws through from the other half and tighten until the drum cannot move on the bracket. Turn the arm by hand: the drum must not touch the motor face below it.
+**Step 1. Drum.** Close the two drum halves around the square base of the shoulder bracket, slots facing outward away from the post. Drop an M4 nut in each nut slot, put the M4 x 40 screws through from the other half (the head sits 16 mm on one side of the split and the nut 21.5 mm on the other, so 30 mm is too short) and tighten until the drum cannot move on the bracket. Turn the arm by hand: the drum must not touch the motor face below it.
 
 ![Step 1](steps/step1_drum.png)
 
