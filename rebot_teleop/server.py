@@ -349,6 +349,10 @@ def create_app(sim=False, arms=("left", "right"), start_hardware=True):
         data = await body(request)
         return await asyncio.to_thread(teleop.start, data.get("source", "dashboard"))
 
+    @app.get("/api/torque")
+    async def torque():
+        return {"now": time.time(), "seconds": C.TORQUE_HISTORY_S, "arms": {name: unit.arm.torque_history() for name, unit in robot.units.items()}}
+
     @app.post("/api/record/start")
     async def record_start():
         return await asyncio.to_thread(recorder.start)

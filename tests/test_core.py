@@ -291,3 +291,31 @@ def test_recorder_saves_states_and_camera_frames(robot, tmp_path):
     assert len(rows) >= 5 and "joints_deg" in rows[0]["arms"]["left"]
     assert (folder / "head.mjpg").read_bytes().startswith(b"\xff\xd8")
     assert len((folder / "head.times.txt").read_text().splitlines()) == done["frames"]["head"]
+
+
+def test_blocked_joint_eases_off_and_frees_itself(robot):
+    from rebot_teleop.arm import HOLD_LEAD, PUSH_LEAD
+    unit = robot.units["left"]
+    robot.power_on("left")
+    bus = robot.factory.buses[unit.arm.channel]
+    bus.held = {0}
+    goal = unit.arm.q.copy()
+    goal[0] += math.radians(40)
+    unit.arm.servo(goal)
+    assert wait_until(lambda: abs(unit.arm.command[0] - unit.arm.q[0]) > HOLD_LEAD[0] * 1.5, timeout=2)
+    assert abs(unit.arm.command[0] - unit.arm.q[0]) <= PUSH_LEAD[0] + 1e-6
+    assert wait_until(lambda: bool(unit.arm.blocked[0]), timeout=3)
+    assert wait_until(lambda: abs(unit.arm.command[0] - unit.arm.q[0]) <= HOLD_LEAD[0] + 1e-6)
+    status = robot.status()["arms"]["left"]
+    assert "blocked" in status["alert_tags"] and "Joint 1 is pressing" in status["alert"]
+    bus.held = set()
+    assert wait_until(lambda: abs(unit.arm.q[0] - goal[0]) < math.radians(2), timeout=6)
+    assert not unit.arm.blocked.any()
+
+
+def test_torque_history_is_served():
+    from rebot_teleop.server import create_app
+    with TestClient(create_app(sim=True)) as client:
+        data = client.get("/api/torque").json()
+    assert set(data["arms"]) == {"left", "right"}
+    assert data["arms"]["left"]["peak"][:4] == [36.0, 36.0, 36.0, 14.0] and data["seconds"] == 60.0

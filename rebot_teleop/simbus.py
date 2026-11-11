@@ -62,6 +62,7 @@ class SimBus:
         self.enabled = False
         self.dead = set()
         self.codes = {}
+        self.held = set()
         self.at = time.monotonic()
         self.sent = 0
         self.temperature = 34.0
@@ -76,6 +77,8 @@ class SimBus:
             return
         alpha = 1.0 - math.exp(-dt / MOTOR_TAU_S)
         moved = (self.goal - self.pos) * alpha
+        for index in self.held:
+            moved[index] = 0.0
         self.vel = moved / dt
         self.pos = self.pos + moved
 

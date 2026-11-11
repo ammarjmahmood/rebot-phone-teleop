@@ -1,3 +1,4 @@
+import collections
 import math
 import threading
 import time
@@ -33,7 +34,11 @@ def min_jerk(start, goal, speed, accel, dt):
 
 STATUS_BITS = ("undervoltage", "overcurrent", "over temperature", "encoder fault", "stall overload", "not calibrated")
 LOAD_WINDOW_S = 10.0
+KP = np.array([kp for kp, _ in C.GAINS[:6]])
+PEAK = np.array([C.PEAK_NM[model] for _, model in C.MOTORS])
+PUSH_LEAD = C.PUSH_FRACTION * PEAK[:6] / KP
 RATED = np.array([C.RATED_NM[model] for _, model in C.MOTORS])
+HOLD_LEAD = RATED[:6] / KP
 NO_GRIPPER_ALERT = "Gripper motor 7 is not answering. This arm is running without its gripper. After fixing the cable, press Power on to pick it up"
 
 
@@ -58,6 +63,11 @@ class Arm:
         self.faulted = set()
         self.load2 = np.zeros(7)
         self.load_at = 0.0
+        self.pushing = np.zeros(6)
+        self.blocked = np.zeros(6, dtype=bool)
+        self.history = collections.deque(maxlen=int(C.TORQUE_HISTORY_S / C.TORQUE_BUCKET_S))
+        self.bucket = np.zeros(7)
+        self.bucket_at = 0.0
         self.offset = np.zeros(7)
         self.measured = np.zeros(7)
         self.velocity = np.zeros(7)
@@ -175,6 +185,9 @@ class Arm:
         load = math.sqrt(self.load2[index])
         text = f"{joint} motor cut out: {names}. It averaged {load:.0f} Nm over the last {LOAD_WINDOW_S:.0f} s and can hold {RATED[index]:.0f} Nm for long. Let the arm hang, then press Power on to reset it"
         error = math.degrees(self.command[index] - self.measured[index])
+        recent = [values[index] for _, values in list(self.history)[-50:]] if index < 6 else []
+        if recent:
+            self._log(f"motor {index + 1} torque over the last 5 s: highest {max(recent):.1f} Nm, half second peaks " + " ".join(f"{max(recent[i:i + 5]):.0f}" for i in range(0, len(recent), 5)))
         self._log(f"{text}; last torque {self.effort[index]:.1f} Nm, position error {error:.1f} deg, joint at {math.degrees(self.measured[index]):.0f} deg")
         self.faulted.add(index)
         if not self.cooling:
@@ -213,7 +226,7 @@ class Arm:
         return [(i + 1, float(load[i]), float(RATED[i])) for i in range(6) if load[i] > RATED[i] * 1.05 and i not in self.faulted]
 
     def _alert_tags(self):
-        return (["no gripper"] if self.connected and not self.has_gripper else []) + (["overloaded"] if self._overloaded() else [])
+        return (["no gripper"] if self.connected and not self.has_gripper else []) + (["overloaded"] if self._overloaded() else []) + (["blocked"] if self.torque and self.blocked.any() else [])
 
     def _alert(self):
         parts = []
@@ -221,6 +234,8 @@ class Arm:
             parts.append(NO_GRIPPER_ALERT)
         for joint, load, rated in self._overloaded():
             parts.append(f"Joint {joint} is holding {load:.0f} Nm, above the {rated:.0f} Nm it can hold for long. It will cut out if it stays there, so bring the arm in or lower it")
+        if self.torque and self.blocked.any():
+            parts.append("Joint " + ", ".join(str(i + 1) for i in np.flatnonzero(self.blocked)) + " is pressing on something, so it eased off. Pull back to free it")
         return ". ".join(parts) or None
 
     def _gripper_back(self):
@@ -316,6 +331,8 @@ class Arm:
             self.codes = [None] * 7
             self.faulted.clear()
             self.load2 = np.zeros(7)
+            self.pushing = np.zeros(6)
+            self.blocked = np.zeros(6, dtype=bool)
             self.gripper_stalled = False
             for motor, position, offset, (kp, kd) in zip(self.motors, q, self.offset, C.GAINS):
                 motor.send_mit(float(position - offset), 0.0, kp, kd, 0.0)
@@ -420,6 +437,7 @@ class Arm:
             overshoot = (np.abs(step) > np.abs(error)) & (np.sign(step) == np.sign(error))
             self.command[:6] = np.where(overshoot, self.target[:6], self.command[:6] + step)
             self.rate[:6] = np.where(overshoot | (np.abs(error) < 1e-5), 0.0, self.rate[:6])
+        self._limit_push(dt)
         error = self.target[6] - self.command[6]
         step = float(np.clip(error, -SERVO_MAX[6] * dt, SERVO_MAX[6] * dt))
         self.command[6] += step
@@ -432,6 +450,31 @@ class Arm:
             self.rate[6] = 0.0
         elif abs(self.target[6] - self.command[6]) > GRIPPER_HOLD_LEAD * 2:
             self.gripper_stalled = False
+
+    def _limit_push(self, dt):
+        if not self.feedback_at:
+            return
+        lead = self.command[:6] - self.measured[:6]
+        limit = np.where(self.blocked, HOLD_LEAD, PUSH_LEAD)
+        over = np.abs(lead) > limit
+        if over.any():
+            self.command[:6] = np.where(over, self.measured[:6] + np.sign(lead) * limit, self.command[:6])
+            self.rate[:6] = np.where(over, 0.0, self.rate[:6])
+        self.rate[:6] = np.clip(self.rate[:6], -SERVO_MAX[:6], SERVO_MAX[:6])
+        self.pushing = np.where(over, self.pushing + dt, 0.0)
+        newly = (self.pushing > C.BLOCKED_AFTER_S) & ~self.blocked
+        if newly.any():
+            self.blocked |= newly
+            self._log("joint " + ", ".join(str(i + 1) for i in np.flatnonzero(newly)) + " is blocked; easing off to a force it can hold")
+        freed = self.blocked & (np.abs(self.target[:6] - self.measured[:6]) <= HOLD_LEAD)
+        if freed.any():
+            self.blocked &= ~freed
+            self._log("joint " + ", ".join(str(i + 1) for i in np.flatnonzero(freed)) + " is free again")
+
+    def torque_history(self):
+        with self.lock:
+            rows = list(self.history)
+        return {"t": [t for t, _ in rows], "nm": [values for _, values in rows], "rated": RATED[:6].tolist(), "peak": PEAK[:6].tolist()}
 
     def _feedback(self, temperatures):
         now = time.monotonic()
@@ -457,6 +500,11 @@ class Arm:
             self.load2[index] += (self.effort[index] ** 2 - self.load2[index]) * blend
             if temperatures and math.isfinite(state.t_mos):
                 self.temperatures[index] = round(float(state.t_mos), 1)
+        self.bucket = np.maximum(self.bucket, np.abs(self.effort))
+        if now - self.bucket_at >= C.TORQUE_BUCKET_S:
+            self.history.append((round(time.time(), 2), [round(float(v), 2) for v in self.bucket[:6]]))
+            self.bucket = np.zeros(7)
+            self.bucket_at = now
         if fresh:
             self.feedback_at = now
             if self.note and self.note.startswith("No feedback"):

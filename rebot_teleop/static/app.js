@@ -71,6 +71,76 @@ function pills() {
   $('pills').replaceChildren(...out);
 }
 
+const TORQUE = { series: '#3987e5', text: '#e6e8eb', muted: '#8b93a0', grid: '#2a2f38', surface: '#171a1f', cols: 3, rows: 2, gap: 14, top: 16 };
+const torqueData = {};
+const torqueHover = {};
+function torquePanel(canvas, j) {
+  const pw = (canvas.clientWidth - TORQUE.gap * (TORQUE.cols - 1)) / TORQUE.cols, ph = (canvas.clientHeight - TORQUE.gap * (TORQUE.rows - 1)) / TORQUE.rows;
+  return { x0: (j % TORQUE.cols) * (pw + TORQUE.gap), y0: Math.floor(j / TORQUE.cols) * (ph + TORQUE.gap), pw, ph };
+}
+function drawTorque(name) {
+  const canvas = $(`torque-${name}`), d = torqueData[name];
+  if (!canvas || !d || canvas.offsetParent === null) return;
+  const ratio = window.devicePixelRatio || 1, w = canvas.clientWidth, h = canvas.clientHeight;
+  if (canvas.width !== Math.round(w * ratio) || canvas.height !== Math.round(h * ratio)) { canvas.width = Math.round(w * ratio); canvas.height = Math.round(h * ratio); }
+  const g = canvas.getContext('2d');
+  g.setTransform(ratio, 0, 0, ratio, 0, 0);
+  g.clearRect(0, 0, w, h);
+  g.font = '11px system-ui, sans-serif';
+  const hover = torqueHover[name];
+  for (let j = 0; j < 6; j++) {
+    const { x0, y0, pw, ph } = torquePanel(canvas, j), plot = ph - TORQUE.top, peak = d.peak[j], rated = d.rated[j];
+    const X = t => x0 + pw * (1 - (d.now - t) / d.seconds), Y = v => y0 + TORQUE.top + plot * (1 - Math.min(v, peak) / peak);
+    const shown = d.t.map((t, i) => [t, d.nm[i][j]]).filter(([t]) => d.now - t <= d.seconds);
+    const last = shown.length ? shown[shown.length - 1][1] : null, high = shown.length ? Math.max(...shown.map(p => p[1])) : null;
+    g.textBaseline = 'top'; g.textAlign = 'left'; g.fillStyle = TORQUE.text;
+    g.fillText(`J${j + 1}   ${last === null ? 'torque off' : last.toFixed(1) + ' Nm now'}`, x0, y0);
+    if (high !== null) { g.textAlign = 'right'; g.fillStyle = TORQUE.muted; g.fillText(`highest ${high.toFixed(1)}`, x0 + pw, y0); }
+    g.setLineDash([]); g.lineWidth = 1; g.strokeStyle = TORQUE.grid;
+    g.beginPath(); g.moveTo(x0, Math.round(Y(0)) + 0.5); g.lineTo(x0 + pw, Math.round(Y(0)) + 0.5); g.moveTo(x0, Math.round(Y(peak)) + 0.5); g.lineTo(x0 + pw, Math.round(Y(peak)) + 0.5); g.stroke();
+    g.setLineDash([4, 4]); g.strokeStyle = TORQUE.muted; g.beginPath(); g.moveTo(x0, Math.round(Y(rated)) + 0.5); g.lineTo(x0 + pw, Math.round(Y(rated)) + 0.5); g.stroke(); g.setLineDash([]);
+    g.textAlign = 'left'; g.fillStyle = TORQUE.muted; g.textBaseline = 'bottom'; g.fillText(`${rated} Nm`, x0 + 2, Y(rated) - 2);
+    g.textBaseline = 'top'; g.fillText(`${peak} Nm max`, x0 + 2, Y(peak) + 3);
+    g.strokeStyle = TORQUE.series; g.lineWidth = 2; g.lineJoin = 'round'; g.beginPath();
+    let prev = null;
+    for (const [t, v] of shown) { if (prev === null || t - prev > 0.5) g.moveTo(X(t), Y(v)); else g.lineTo(X(t), Y(v)); prev = t; }
+    g.stroke();
+    if (hover && hover.t !== null) {
+      const near = shown.reduce((best, p) => best === null || Math.abs(p[0] - hover.t) < Math.abs(best[0] - hover.t) ? p : best, null);
+      if (near && Math.abs(near[0] - hover.t) < 0.5) {
+        g.strokeStyle = TORQUE.muted; g.lineWidth = 1; g.beginPath(); g.moveTo(X(near[0]), y0 + TORQUE.top); g.lineTo(X(near[0]), y0 + ph); g.stroke();
+        g.fillStyle = TORQUE.series; g.strokeStyle = TORQUE.surface; g.lineWidth = 2; g.beginPath(); g.arc(X(near[0]), Y(near[1]), 4, 0, 6.3); g.fill(); g.stroke();
+      }
+    }
+  }
+}
+function torqueHoverEvents(name) {
+  const canvas = $(`torque-${name}`), tip = $(`torque-tip-${name}`);
+  canvas.addEventListener('mousemove', e => {
+    const d = torqueData[name], box = canvas.getBoundingClientRect(), x = e.clientX - box.left, y = e.clientY - box.top;
+    if (!d) return;
+    const j = Math.min(TORQUE.cols - 1, Math.floor(x / (box.width / TORQUE.cols))) + TORQUE.cols * Math.min(TORQUE.rows - 1, Math.floor(y / (box.height / TORQUE.rows)));
+    const { x0, pw } = torquePanel(canvas, j), t = d.now - d.seconds * (1 - Math.min(Math.max((x - x0) / pw, 0), 1));
+    let best = -1;
+    d.t.forEach((v, i) => { if (best < 0 || Math.abs(v - t) < Math.abs(d.t[best] - t)) best = i; });
+    if (best < 0 || Math.abs(d.t[best] - t) > 0.5) { torqueHover[name] = null; tip.style.display = 'none'; drawTorque(name); return; }
+    torqueHover[name] = { t: d.t[best] };
+    tip.textContent = `${Math.round(d.now - d.t[best])} s ago\n` + d.nm[best].map((v, i) => `J${i + 1}  ${v.toFixed(1)} Nm`).join('\n');
+    tip.style.display = 'block';
+    tip.style.left = Math.min(x + 14, box.width - 110) + 'px';
+    tip.style.top = Math.max(y - 20, 0) + 'px';
+    drawTorque(name);
+  });
+  canvas.addEventListener('mouseleave', () => { torqueHover[name] = null; tip.style.display = 'none'; drawTorque(name); });
+}
+setInterval(() => {
+  if (state.tab !== 'home' || document.hidden) return;
+  fetch('/api/torque').then(r => r.ok ? r.json() : null).then(r => {
+    if (!r) return;
+    for (const [name, d] of Object.entries(r.arms)) { torqueData[name] = { ...d, now: r.now, seconds: r.seconds }; drawTorque(name); }
+  }).catch(() => {});
+}, 500);
+
 const armCards = {};
 function armCard(name) {
   if (armCards[name]) return armCards[name];
@@ -81,6 +151,8 @@ function armCard(name) {
       el('button', { class: 'small', onclick: () => { if (confirm(`Torque off the ${name} arm? Hold it first.`)) act('/api/power', { arm: name, on: false }, name + ' torque off; move it by hand'); } }, 'Power off')),
     el('div', { class: 'note', id: `note-${name}` }),
     el('table', {}, el('thead', {}, el('tr', {}, el('th', {}, 'Joint'), el('th', {}, 'deg'), el('th', {}, ''), el('th', {}, 'C'), el('th', {}, 'Nm'), el('th', {}, 'grav'), el('th', {}, 'jog'))), body),
+    el('div', { class: 'muted small-text torque-title' }, 'Torque on each joint over the last minute. The dashed line is what the motor can hold for long'),
+    el('div', { class: 'torque-wrap' }, el('canvas', { class: 'torque', id: `torque-${name}` }), el('div', { class: 'torque-tip', id: `torque-tip-${name}` })),
     el('div', { class: 'buttons' }, el('span', { class: 'muted' }, 'Gripper'), el('span', { class: 'mono', id: `grip-${name}` }),
       el('button', { class: 'small', onclick: () => act('/api/gripper', { arm: name, state: 'open' }) }, 'Open'),
       el('button', { class: 'small', onclick: () => act('/api/gripper', { arm: name, state: 'closed' }) }, 'Close'),
@@ -92,6 +164,7 @@ function armCard(name) {
   }
   $('arm-cards').append(card);
   armCards[name] = card;
+  torqueHoverEvents(name);
   return card;
 }
 
