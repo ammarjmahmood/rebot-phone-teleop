@@ -1,7 +1,7 @@
 const $ = id => document.getElementById(id);
 const CAMERAS = ['head', 'left', 'right'];
 let ws = null, session = null, refSpace = null, gl = null, panel = null;
-let cameraIndex = 0, panelOn = true, lastButtons = {}, gripWas = {}, lastStatus = {}, seq = 0, rtt = null, hud = null, hudDirty = true, pads = {}, budgetWas = {};
+let cameraIndex = 0, panelOn = true, lastButtons = {}, gripWas = {}, lastStatus = {}, seq = 0, rtt = null, hud = null, hudDirty = true, pads = {}, budgetWas = {}, lastTeleop = {};
 
 function status(text) { $('status').textContent = text; }
 
@@ -12,10 +12,11 @@ function connect() {
     const m = JSON.parse(event.data);
     if (m.type !== 'status' && m.type !== 'started') return;
     lastStatus = m.arms || lastStatus;
+    lastTeleop = m.teleop || lastTeleop;
     hudDirty = true;
     budgetAlerts(m.arms || {});
     if (m.type === 'status' && m.t) { rtt = Date.now() - m.t; const tl = m.teleop || {}; $('link').textContent = `Round trip ${rtt} ms, ${tl.input_hz || 0} frames/s, ${tl.dropped || 0} dropped`; }
-    const chips = Object.entries(m.arms || {}).map(([n, a]) => `<span class="${a.ready && budgetLevel(a) === 'ok' ? 'ok' : 'warn'}">${n}: ${budgetText(a)}</span>`);
+    const chips = Object.entries(m.arms || {}).map(([n, a]) => `<span class="${a.ready && budgetLevel(a) === 'ok' ? 'ok' : 'warn'}">${n}: ${budgetText(a, n)}</span>`);
     $('arms').innerHTML = chips.join('');
     const faults = Object.entries(m.arms || {}).filter(([, a]) => a.fault).map(([n, a]) => `${n} arm: ${a.fault}`);
     if (faults.length) status(faults.join(' '));
@@ -32,7 +33,12 @@ function budgetLevel(a) {
   return h.pct >= 80 ? 'rest' : h.pct >= 50 && h.seconds !== null ? 'warm' : 'ok';
 }
 
-function budgetText(a) {
+function budgetText(a, name) {
+  const limited = name && lastTeleop.hands && lastTeleop.hands[name] && lastTeleop.hands[name].reach_limited;
+  return budgetCore(a) + (limited ? ', reach limited' : '');
+}
+
+function budgetCore(a) {
   if (!a.connected) return 'offline';
   if (a.rest) {
     const r = a.rest;
@@ -82,7 +88,7 @@ function drawHud() {
     x.fillRect(bx, by, bw * pct / 100, bh);
     x.fillStyle = '#e8eaed';
     x.font = '26px sans-serif';
-    x.fillText(budgetText(a), bx + bw + 14, y + rowH / 2);
+    x.fillText(budgetText(a, name), bx + bw + 14, y + rowH / 2);
   });
   const gl2 = gl;
   gl2.bindTexture(gl2.TEXTURE_2D, hud.texture);

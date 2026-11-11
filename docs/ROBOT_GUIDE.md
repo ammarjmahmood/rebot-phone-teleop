@@ -55,7 +55,7 @@ You rarely need joints directly. Prefer tip positions (`robot.move_tip`) and let
 
 * Each arm works on its own side: with the hand pointing down the left arm reaches y from about 0.10 to 0.40 m and the right arm y from about -0.10 to -0.40 m, at x from about 0.15 to 0.40 m at table height. The side mounts stop either arm from crossing the centre line; that is the joint limits, not software.
 * Nothing is refused. A target out of reach moves as close as the arm can get and the result gives `reach_error_m` and a note. Use `robot.can_reach` to check first.
-* There is no collision checking between the arms, the post or the table. Plan moves that stay clear, go up before going across, and move in a few larger steps.
+* There is no collision checking between the arms or with the post. The table is checked once its position is set (`POST /api/table` with `top`, its height in metres, and `front`, how far its near edge is from the post): a move whose path would take the gripper or wrist into it is refused with an error that says so. Moves are straight lines in joint space, so a move from home to a point over the table swings the gripper low through the table edge; go to ready first, then over, then down.
 
 ## Cameras
 
@@ -70,6 +70,9 @@ The arms hang off the side of the post, so joint 1 carries the whole arm wheneve
 * The ready pose costs joint 1 about 7.5 Nm, nearly all of its budget. Reaching straight out costs about 16.6 Nm, which lasts seconds.
 * At 80% the arm relaxes at home by itself, waits until the motors recover (about 2 to 3 minutes) and then goes back to where it was. Moves are refused while it relaxes; `robot.wait_ready()` waits for it.
 * Work quickly, keep the hand close in or low, and park at home, which costs almost nothing.
+* Every move returns `load`, the torque each joint will hold at its goal, and `load_note` when a joint would hold more than it can for long and how many seconds that leaves. Holding a 0.8 kg jar reached out puts joint 1 at 15 to 19 Nm, which lasts 13 to 30 s: pick, move and set objects down rather than holding them out.
+* In teleop, once a joint has used half its budget the arm stops following the hand further out than that joint can hold; the headset and dashboard say "reach limited". Bring the hand in and it follows again.
+* `robot.motor_report()` (MCP `motor_report`) shows which poses used the budget most and least over the last day.
 * The Sequencer checks every sequence against the budget (`plan_sequence`, or `GET /api/seq/<name>/plan`) and rests the arms before any step that would run out.
 
 ## Habits that work

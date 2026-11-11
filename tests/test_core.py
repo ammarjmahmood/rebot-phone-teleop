@@ -524,3 +524,84 @@ def test_motor_log_records_poses_events_and_reports_costly_poses(robot, tmp_path
     assert all(len(e["q"]) == 6 for e in report["events"])
     text = report_text(report)
     assert "poses that use joint 1's budget most" in text and "right arm" in text
+
+
+def test_counterweight_moves_the_rest_pose_to_where_the_load_balances():
+    C.save("arms/right/settings.json", {"counterbalance": {"constant_nm": 4.6, "forward": -1}})
+    try:
+        unit = Robot(sim=True).units["right"]
+        home = np.radians(C.POSES_DEG["home"]["right"])
+        moved = math.degrees(home[0] - unit.arm.home_q[0])
+        assert 10 < moved < 25
+        assert abs(unit.kin.gravity_function()(unit.arm.home_q)[0]) < 0.5
+        assert np.allclose(unit.arm.home_q[1:], home[1:])
+    finally:
+        (C.DATA / "arms/right/settings.json").unlink()
+
+
+def test_reach_guard_stops_teleop_reaching_out_when_the_budget_is_low(robot):
+    robot.power_on()
+    robot.go("ready")
+    robot.wait(20)
+    teleop = Teleop(robot)
+    unit = robot.units["right"]
+    arm = unit.arm
+
+    def reach(used):
+        robot.go("ready", "right")
+        robot.wait(20)
+        with arm.lock:
+            arm.heat.used[:] = used
+        hand = {"p": [0.0, 1.0, -0.3], "q": [0, 0, 0, 1], "grip": 0.0, "trigger": 0.0}
+        teleop.push_hands({"yaw": 0.0, "hands": {"right": hand}})
+        time.sleep(0.1)
+        hand["grip"] = 1.0
+        for _ in range(10):
+            teleop.push_hands({"yaw": 0.0, "hands": {"right": hand}})
+            time.sleep(0.01)
+        for _ in range(80):
+            hand["p"] = [0.0, 1.05, -0.65]
+            with arm.lock:
+                arm.heat.used[:] = used
+            teleop.push_hands({"yaw": 0.0, "hands": {"right": hand}})
+            time.sleep(0.01)
+        time.sleep(0.5)
+        return abs(unit.load_at(arm.target[:6])[0]), teleop.status()["hands"]["right"]["reach_limited"]
+
+    free_load, free_limited = reach(0.0)
+    guarded_load, guarded_limited = reach(0.6)
+    teleop.stop()
+    assert free_load > 9.0 and not free_limited
+    assert guarded_load <= 8.3 and guarded_limited
+
+
+def test_autonomous_move_reports_the_load_it_will_hold():
+    from rebot_teleop.server import create_app
+    with TestClient(create_app(sim=True)) as client:
+        robot = client.app.state.robot
+        assert wait_until(lambda: all(u.arm.connected for u in robot.units.values()))
+        robot.power_on("right")
+        data = client.post("/api/move", json={"arm": "right", "joints_deg": [1.4, 175.0, 147.1, 13.9, -13.0, -158.1], "speed_deg_s": 90}).json()
+        assert data["load"]["worst"]["joint"] == 1 and abs(data["load"]["worst"]["nm"]) > 15
+        assert "Joint 1 holds about" in data["load_note"]
+        easy = client.post("/api/move", json={"pose": "home", "arm": "right"}).json()
+        assert "load_note" not in easy
+
+
+def test_table_guard_refuses_moves_into_the_table_once_it_is_measured(robot):
+    robot.power_on("right")
+    robot.go("ready", "right")
+    robot.wait(20)
+    unit = robot.units["right"]
+    down = np.radians(C.POSES_DEG["ready"]["right"])
+    low, _, _ = unit.kin.ik(np.array([0.32, -0.25, 0.60]), unit.kin.pose(down)[1], down, iterations=150)
+    assert unit.table_hit(low) is None
+    robot.set_table(top=0.68, front=0.20)
+    try:
+        assert "into the table" in unit.table_hit(low)
+        with pytest.raises(ValueError):
+            unit.move_tip([0.32, -0.25, 0.60])
+        high, _, _ = unit.kin.ik(np.array([0.32, -0.25, 0.80]), unit.kin.pose(down)[1], down, iterations=150)
+        assert unit.table_hit(high) is None
+    finally:
+        robot.set_table(front=-1)

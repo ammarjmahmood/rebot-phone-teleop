@@ -4,8 +4,9 @@ import time
 from pathlib import Path
 import numpy as np
 from rebot_teleop import config as C
-from rebot_teleop.arm import Arm, LOWER, UPPER
-from rebot_teleop.kin import Kinematics, top_down
+from rebot_teleop.arm import Arm, LOWER, UPPER, min_jerk
+from rebot_teleop import heat as H
+from rebot_teleop.kin import Kinematics, rest_pose, top_down
 
 NET = Path("/sys/class/net")
 
@@ -49,6 +50,10 @@ class Unit:
         self.channel = C.DEFAULT_CAN.get(name, "can0")
         self.arm = Arm(name, self.channel, gravity=self.kin.gravity_function(), controller_factory=factory, motors=settings.get("motors"))
         self.arm.home_q = np.radians(C.POSES_DEG["home"][name])
+        self.load_lock = threading.Lock()
+        self.load_gravity = self.kin.gravity_function()
+        if self.counterbalance:
+            self.arm.home_q = rest_pose(self.kin, self.arm.home_q)
         if self.counterbalance and self.counterbalance.get("j2_min_deg") is not None:
             floor = math.radians(float(self.counterbalance["j2_min_deg"]))
             self.arm.lower[1] = max(self.arm.lower[1], floor)
@@ -91,6 +96,26 @@ class Unit:
             else:
                 time.sleep(0.2)
 
+    def load_at(self, q):
+        with self.load_lock:
+            predicted = np.asarray(self.load_gravity(np.asarray(q, dtype=float)[:6]), dtype=float)
+            if not self.arm.torque:
+                return predicted
+            residual = self.arm.effort[:6] - np.asarray(self.load_gravity(self.arm.measured[:6]), dtype=float)
+        return predicted + np.clip(residual, -C.PEAK_NM["rs-00"], C.PEAK_NM["rs-00"])
+
+    def load_report(self, q):
+        load = self.load_at(q)
+        arm = self.arm
+        rows = []
+        for j in range(6):
+            hold = float(arm.continuous[j])
+            seconds = H.seconds_at(H.TABLES[arm.models[j]]["still"], load[j])
+            left = None if seconds == math.inf else max(0.0, (C.HEAT_LOWER - float(arm.heat.used[j])) * seconds)
+            rows.append({"joint": j + 1, "nm": round(float(load[j]), 1), "hold_nm": hold, "seconds_before_relax": None if left is None else round(left)})
+        worst = max(rows, key=lambda r: abs(r["nm"]) / r["hold_nm"])
+        return {"worst": worst, "joints_nm": [r["nm"] for r in rows]}
+
     @property
     def ready(self):
         return self.arm.torque and not self.arm.fault
@@ -101,11 +126,37 @@ class Unit:
     def power_off(self):
         self.arm.disable()
 
+    def table_hit(self, goal):
+        table = self.robot.table
+        if table.get("front") is None:
+            return None
+        start = self.arm.command[:6] if self.arm.torque else self.arm.measured[:6]
+        floor = float(table["top"]) + float(table.get("clearance", 0.01))
+        already = set()
+        for index, (_, q) in enumerate(min_jerk(start, np.clip(goal, self.arm.lower, self.arm.upper), math.radians(90.0), math.radians(360.0), 0.05)):
+            links = self.kin.links(q)
+            for name, margin in C.TABLE_POINTS:
+                if name not in links:
+                    continue
+                x, z = links[name][0, 3], links[name][2, 3]
+                inside = x >= float(table["front"]) and z < floor + margin
+                if index == 0 and inside:
+                    already.add(name)
+                elif inside and name not in already:
+                    return f"That move would put the {name.replace('_', ' ')} into the table ({z:.2f} m high, {x:.2f} m out; the table top is {float(table['top']):.2f} m). Go up and over first, then down"
+        return None
+
+    def check_table(self, goal):
+        problem = self.table_hit(goal)
+        if problem:
+            raise ValueError(problem)
+
     def move_tip(self, xyz, rotation=None, speed_deg_s=C.MOVE_DEG_S):
         seed = self.arm.command[:6] if self.arm.torque else self.arm.q
         if rotation is None:
             rotation = self.kin.pose(seed)[1]
         q, err, _ = self.kin.ik(xyz, rotation, seed, iterations=80)
+        self.check_table(q)
         duration = self.arm.move(q, speed_deg_s)
         return q, err, duration
 
@@ -128,6 +179,7 @@ class Robot:
             from rebot_teleop.simbus import SimFactory
             factory = SimFactory({C.DEFAULT_CAN.get(n, "can0"): C.POSES_DEG["home"][n] + [C.GRIPPER_OPEN_DEG] for n in names})
         self.factory = factory
+        self.table = {**C.TABLE_DEFAULT, **C.load("table.json", {})}
         self.units = {name: Unit(name, self, factory) for name in names}
         self.listeners = []
 
@@ -198,8 +250,19 @@ class Robot:
             return np.radians(C.POSES_DEG[pose][name])
         raise ValueError(f"Unknown pose {pose}")
 
+    def set_table(self, top=None, front=None):
+        if top is not None:
+            self.table["top"] = float(top)
+        if front is not None:
+            self.table["front"] = None if float(front) < 0 else float(front)
+        C.save("table.json", self.table)
+        return self.table
+
     def go(self, pose, arm=None, speed_deg_s=C.MOVE_DEG_S):
         longest = 0.0
+        for unit in self.pick(arm):
+            if unit.ready:
+                unit.check_table(self.pose_joints(pose, unit.name))
         for unit in self.pick(arm):
             if unit.ready:
                 longest = max(longest, unit.arm.move(self.pose_joints(pose, unit.name), speed_deg_s))
@@ -238,7 +301,7 @@ class Robot:
         return out
 
     def status(self):
-        return {"sim": self.sim, "arms": {name: unit.status() for name, unit in self.units.items()}, "can": can_interfaces()}
+        return {"sim": self.sim, "arms": {name: unit.status() for name, unit in self.units.items()}, "can": can_interfaces(), "table": self.table}
 
 
 def clamp(q):

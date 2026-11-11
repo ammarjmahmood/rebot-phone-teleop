@@ -216,7 +216,9 @@ def create_app(sim=False, arms=("left", "right"), start_hardware=True):
             joints = np.radians(np.asarray(data["joints_deg"], dtype=float))
             if joints.shape != (6,):
                 raise ValueError("joints_deg needs six numbers")
+            unit.check_table(joints)
             result["duration_s"] = unit.arm.move(joints, speed)
+            result["load"] = unit.load_report(joints)
         elif data.get("tip_xyz") is not None or data.get("tip_delta") is not None:
             current, rotation = unit.kin.pose(unit.arm.command[:6])
             goal = np.asarray(data["tip_xyz"], dtype=float) if data.get("tip_xyz") is not None else current + np.asarray(data["tip_delta"], dtype=float)
@@ -224,6 +226,12 @@ def create_app(sim=False, arms=("left", "right"), start_hardware=True):
             result.update({"duration_s": duration, "reach_error_m": round(err, 4), "joints_deg": [round(math.degrees(v), 2) for v in q]})
             if err > 0.01:
                 result["note"] = f"Out of reach by {err * 100:.1f} cm; moved as close as the arm can get"
+            result["load"] = unit.load_report(q)
+        if result.get("load"):
+            worst = result["load"]["worst"]
+            if abs(worst["nm"]) > worst["hold_nm"]:
+                left = worst["seconds_before_relax"]
+                result["load_note"] = f"Joint {worst['joint']} holds about {abs(worst['nm']):.0f} Nm here, more than the {worst['hold_nm']:.0f} Nm it holds for long" + (f"; about {left} s before the arm relaxes itself. Keep this short, or bring the hand closer in or lower" if left is not None else "")
         if data.get("gripper_m") is not None:
             unit.arm.grip(float(data["gripper_m"]))
         await wait_done(data)
@@ -348,7 +356,7 @@ def create_app(sim=False, arms=("left", "right"), start_hardware=True):
                 if d > 0:
                     out.append({"xyz": np.round(pose[:3, :3] @ (ray * d) + pose[:3, 3], 4).tolist(), "method": "depth", "distance_m": round(float(d), 4)})
                     continue
-            z = float(plane if plane is not None else C.load("table.json", {"top": 0.68})["top"])
+            z = float(plane if plane is not None else robot.table["top"])
             direction = pose[:3, :3] @ ray
             t = (z - pose[2, 3]) / direction[2] if abs(direction[2]) > 1e-6 else -1
             out.append({"xyz": np.round(pose[:3, 3] + direction * t, 4).tolist() if t > 0 else None, "method": f"plane z={z}"})
@@ -367,6 +375,15 @@ def create_app(sim=False, arms=("left", "right"), start_hardware=True):
     @app.get("/api/torque")
     async def torque():
         return {"now": time.time(), "seconds": C.TORQUE_HISTORY_S, "arms": {name: unit.arm.torque_history() for name, unit in robot.units.items()}}
+
+    @app.get("/api/table")
+    async def table_get():
+        return robot.table
+
+    @app.post("/api/table")
+    async def table_set(request: Request):
+        data = await body(request)
+        return robot.set_table(data.get("top"), data.get("front"))
 
     @app.get("/api/motorlog/report")
     async def motorlog_report(hours: float = 24.0, arm: str = None, format: str = "json"):

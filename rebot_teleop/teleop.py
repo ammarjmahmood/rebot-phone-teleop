@@ -42,6 +42,7 @@ class Hand:
         self.reach_error = 0.0
         self.last_width = None
         self.velocity = None
+        self.guarded = False
 
 
 class Teleop:
@@ -230,12 +231,41 @@ class Teleop:
             else:
                 goal_r = tip_rot
             q, err, _ = unit.kin.ik(goal_p, goal_r, hand.solution, iterations=12)
+            q = self._guard(unit, hand, goal_p, goal_r, q)
             hand.solution = q
             hand.reach_error = err
             try:
                 arm.servo(q)
             except ValueError:
                 hand.engaged = False
+
+    def _guard(self, unit, hand, goal_p, goal_r, q):
+        arm = unit.arm
+        watch = [j for j in range(6) if arm.heat.used[j] >= C.REACH_GUARD_AT]
+        if not watch:
+            hand.guarded = False
+            return q
+        now = np.abs(unit.load_at(arm.command[:6]))
+        limit = np.maximum(arm.continuous, now)
+
+        def ok(candidate):
+            load = np.abs(unit.load_at(candidate))
+            return all(load[j] <= limit[j] for j in watch)
+
+        if ok(q):
+            hand.guarded = False
+            return q
+        start = unit.kin.pose(arm.command[:6])[0]
+        lo, hi, best = 0.0, 1.0, arm.command[:6].copy()
+        for _ in range(5):
+            mid = (lo + hi) / 2
+            candidate, _, _ = unit.kin.ik(start + (goal_p - start) * mid, goal_r, hand.solution, iterations=8)
+            if ok(candidate):
+                lo, best = mid, candidate
+            else:
+                hi = mid
+        hand.guarded = True
+        return best
 
     def _velocity_step(self, hand, unit, velocity, dt):
         arm = unit.arm
@@ -248,6 +278,7 @@ class Teleop:
         spin = frame @ velocity["angular"] * dt
         goal_r = pin.exp3(spin) @ rot
         q, err, _ = unit.kin.ik(goal_p, goal_r, hand.solution, iterations=8)
+        q = self._guard(unit, hand, goal_p, goal_r, q)
         hand.solution = q
         hand.reach_error = err
         try:
@@ -259,5 +290,5 @@ class Teleop:
         return {
             "active": self.active, "source": self.source, "settings": self.settings, "loop_hz": round(self.loop_hz), "input_hz": round(self.input_hz),
             "frames": self.frames, "dropped": self.dropped, "latency_ms": self.latency_ms,
-            "hands": {n: {"engaged": h.engaged, "reach_error_cm": round(h.reach_error * 100, 1), "age_ms": None if h.sample is None else round((time.monotonic() - h.sample["at"]) * 1000)} for n, h in self.hands.items()},
+            "hands": {n: {"engaged": h.engaged, "reach_limited": h.guarded, "reach_error_cm": round(h.reach_error * 100, 1), "age_ms": None if h.sample is None else round((time.monotonic() - h.sample["at"]) * 1000)} for n, h in self.hands.items()},
         }

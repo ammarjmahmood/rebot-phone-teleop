@@ -145,6 +145,18 @@ class Kinematics:
         return gravity
 
 
+def rest_pose(kin, home):
+    gravity = kin.gravity_function()
+    best = None
+    for step in range(-C.REST_SEARCH_DEG, C.REST_SEARCH_DEG + 1):
+        q = np.array(home, dtype=float)[:6].copy()
+        q[0] = np.clip(q[0] + math.radians(step), kin.lower[0], kin.upper[0])
+        cost = abs(float(gravity(q)[0])) + 0.002 * abs(step)
+        if best is None or cost < best[0]:
+            best = (cost, q)
+    return best[1]
+
+
 def assist(counter, q1):
     forward = float(counter.get("forward", 1.0))
     swing = forward * (float(q1) - math.radians(float(counter.get("zero_deg", 0.0))))

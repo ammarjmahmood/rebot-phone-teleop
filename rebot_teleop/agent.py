@@ -17,6 +17,11 @@ State
   robot.budget(arm)                  motor budget: worst joint, pct used, seconds left before the arm relaxes itself
   robot.wait_ready(arm=None)         waits while an arm relaxes to recover, then returns
   robot.motor_report(hours=24)       which poses used joint 1's budget most and least, and events with joint angles
+  robot.table()                      table top height and how far its near edge is from the post (metres)
+
+Table: moves that would take the gripper or wrist into the table are refused with an error that says so;
+go up and over, then down. Every move returns load: the torque each joint will hold at the goal, and
+load_note when a joint would hold more than it can for long.
 
 Motor budget: the shoulder (joint 1) can hold about 8 Nm while still. Reaching far out uses it up in minutes,
 then the arm relaxes at home, recovers and goes back up by itself. Work fast, keep poses close in or low,
@@ -83,6 +88,9 @@ class Robot:
     def state(self):
         arms = self._call("GET", "/api/status")["arms"]
         return {name: {"joints_deg": a["joints_deg"], "tip_xyz": a["tip_xyz"], "gripper_m": a["gripper_m"], "powered": a["powered"], "connected": a["connected"], "note": a["note"] or a["fault"], "budget": a.get("heat")} for name, a in arms.items()}
+
+    def table(self):
+        return self._call("GET", "/api/table")
 
     def motor_report(self, hours=24.0):
         return self._call("GET", f"/api/motorlog/report?hours={hours}")
