@@ -149,7 +149,7 @@ def assist(counter, q1):
     forward = float(counter.get("forward", 1.0))
     swing = forward * (float(q1) - math.radians(float(counter.get("zero_deg", 0.0))))
     swing = min(max(swing, 0.0), math.radians(float(counter.get("max_deg", 170.0))))
-    return forward * float(counter.get("nm_per_rad", 0.0)) * swing
+    return forward * (float(counter.get("nm_per_rad", 0.0)) * swing + float(counter.get("constant_nm", 0.0)))
 
 
 def top_down(yaw_deg=0.0):

@@ -487,3 +487,14 @@ def test_joint_1_can_be_an_rs03():
     assert arm.continuous[0] == 15.0 and arm.peak[0] == 60.0
     assert H.seconds_at(H.TABLES["rs-03"]["still"], 20.0) == pytest.approx(30.0)
     assert H.heat_rate("rs-03", 12.0, 0) < 0
+
+
+def test_hanging_weight_counterbalance_is_a_constant_pull():
+    C.save("arms/right/settings.json", {"counterbalance": {"constant_nm": 4.0, "forward": -1}})
+    try:
+        unit = Robot(sim=True).units["right"]
+        gravity = unit.kin.gravity_function()
+        assert gravity(np.radians(C.POSES_DEG["ready"]["right"]))[0] == pytest.approx(-3.53, abs=0.1)
+        assert gravity(np.radians(C.POSES_DEG["home"]["right"]))[0] == pytest.approx(4.1, abs=0.1)
+    finally:
+        (C.DATA / "arms/right/settings.json").unlink()

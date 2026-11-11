@@ -11,22 +11,21 @@ SEG = 96
 SQUARE_X = (-39.0, 39.6)
 SQUARE_Y = (-40.6, 42.5)
 DRUM_Z = (1.5, 11.0)
-GROOVE_R = 65.0
+GROOVE_R = 68.5
 FLANGE_R = 72.0
-GROOVE_W = 3.0
 BOLT_X = 52.0
 ANCHOR_DEG = (75, 90, 105, -75, -90, -105)
 
 POST = 40.0
 POST_GAP = 0.6
-COLLAR_WALL = 9.0
+COLLAR_WALL = 6.0
 COLLAR_H = 42.0
 CABLE_Y = 101.0
-CABLE_X = 65.0
+CABLE_X = 69.6
 SHEAVE_R = 22.0
 SHEAVE_PITCH = 18.8
 SHEAVE_W = 10.0
-AXLE_Z = 22.0
+AXLE_Z = 13.0
 
 
 def box(x0, x1, y0, y1, z0, z1):
@@ -55,7 +54,8 @@ def drum():
     z0, z1 = DRUM_Z
     zc = (z0 + z1) / 2
     body = cyl(FLANGE_R, z0, z1)
-    body -= cyl(FLANGE_R + 1, zc - GROOVE_W / 2, zc + GROOVE_W / 2) - cyl(GROOVE_R, zc - GROOVE_W / 2 - 1, zc + GROOVE_W / 2 + 1)
+    reach = FLANGE_R + 1 - GROOVE_R
+    body -= Manifold.revolve(CrossSection([[(GROOVE_R, zc), (FLANGE_R + 1, zc - reach), (FLANGE_R + 1, zc + reach)]]), SEG)
     body -= box(SQUARE_X[0], SQUARE_X[1], SQUARE_Y[0], SQUARE_Y[1], z0 - 1, z1 + 1)
     for cx in (SQUARE_X[0], SQUARE_X[1]):
         for cy in (SQUARE_Y[0], SQUARE_Y[1]):
@@ -66,7 +66,7 @@ def drum():
         body -= box(x - 3.6, x + 3.6, -21.5, -17.5, zc - 4.2, z1 + 1)
     for deg in ANCHOR_DEG:
         a = math.radians(deg)
-        hole = cyl_x(1.3, 46, GROOVE_R + 2, 0, zc, 24)
+        hole = cyl_x(1.3, 46, FLANGE_R + 1, 0, zc, 24)
         pocket = box(47, 58, -3.2, 3.2, zc - 3.2, z1 + 1)
         tool = (hole + pocket).rotate([0, 0, deg])
         body -= tool
@@ -76,11 +76,11 @@ def drum():
     return upper, lower
 
 
-def sheave():
+def sheave(bore=11.05):
     body = cyl(SHEAVE_R, 0, SHEAVE_W)
     groove = Manifold.revolve(CrossSection([[(SHEAVE_PITCH - 1.0, SHEAVE_W / 2), (SHEAVE_R + 1, SHEAVE_W / 2 - 4.0), (SHEAVE_R + 1, SHEAVE_W / 2 + 4.0)]]), SEG)
     body -= groove
-    body -= cyl(11.05, -1, SHEAVE_W + 1)
+    body -= cyl(bore, -1, SHEAVE_W + 1)
     return body
 
 
@@ -89,13 +89,13 @@ def collar(z0, z1):
     outer = half + COLLAR_WALL
     back = box(-outer, 0, -outer, outer, z0, z1) - box(-half, half, -half, half, z0 - 1, z1 + 1)
     front = box(0, outer, -outer, outer, z0, z1) - box(-half, half, -half, half, z0 - 1, z1 + 1)
-    back += box(-8, 0, -outer - 12, outer + 12, z0, z1)
-    front += box(0, 8, -outer - 12, outer + 12, z0, z1)
+    back += box(-6, 0, -outer - 12, outer + 12, z0, z1)
+    front += box(0, 6, -outer - 12, outer + 12, z0, z1)
     holes = Manifold()
     for y in (-(outer + 6), outer + 6):
         for z in (z0 + 0.27 * (z1 - z0), z0 + 0.73 * (z1 - z0)):
             holes += cyl_x(2.75, -20, 20, y, z)
-            holes += hexagon(8.2, 0, 5, 0, 0).rotate([0, 90, 0]).translate([3.5, y, z])
+            holes += hexagon(8.2, 0, 5, 0, 0).rotate([0, 90, 0]).translate([2.0, y, z])
     back -= holes
     front -= holes
     return back, front
@@ -110,8 +110,8 @@ def pulley_bracket():
     inner = (cy + SHEAVE_W / 2 + 1.0, cy + SHEAVE_W / 2 + 7.0)
     outer = (cy - SHEAVE_W / 2 - 7.0, cy - SHEAVE_W / 2 - 1.0)
     half = POST / 2 + POST_GAP / 2 + COLLAR_WALL
-    arm = Manifold.batch_hull([box(-half, -half + 14, -half, -half + 8, z0, z1), box(px - 10, px + 10, inner[0], inner[1] + 2, z0, z1)])
-    fork = box(px - 15, px + 15, outer[0], inner[1], z0, z1)
+    arm = Manifold.batch_hull([box(-half, -half + 10, -half, -half + 8, z0, z1), box(px - 5, px + 5, inner[0], inner[1] + 2, z0, z1)])
+    fork = box(px - 12, px + 12, outer[0], inner[1], z0, z1)
     body = back + arm + fork
     body -= box(px - SHEAVE_R - 3, px + SHEAVE_R + 3, cy - SHEAVE_W / 2 - 1.0, cy + SHEAVE_W / 2 + 1.0, z0 - 1, z1 - 6)
     body -= cyl_y(4.2, cy - 30, cy + 30, px, pz)
@@ -126,7 +126,7 @@ def spring_anchor():
     ax = -(CABLE_X + 2 * SHEAVE_PITCH)
     ay = -CABLE_Y
     half = POST / 2 + POST_GAP / 2 + COLLAR_WALL
-    arm = Manifold.batch_hull([box(-half, -half + 14, -half, -half + 8, z0, z1), cyl(12, z0, z1, ax, ay, 48)])
+    arm = Manifold.batch_hull([box(-half, -half + 10, -half, -half + 8, z0, z1), cyl(10, z0, z1, ax, ay, 48)])
     body = back + arm
     body -= cyl(3.4, z0 - 1, z1 + 1, ax, ay, 32)
     gap = POST / 2 + POST_GAP / 2
@@ -155,6 +155,7 @@ def main():
     save(upper, "drum_half_a")
     save(lower, "drum_half_b")
     save(sheave(), "pulley_sheave_608")
+    save(sheave(4.3), "pulley_sheave_no_bearing")
     bracket = pulley_bracket()[0]
     anchor = spring_anchor()[0]
     save(bracket, "top_bracket_right")
