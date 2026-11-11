@@ -156,6 +156,22 @@ class Arm:
             return False
         return True
 
+    def _report_fault(self, index, motor):
+        try:
+            fault, warning = motor.robstride_get_fault_report()
+            self._log(f"motor {index + 1} fault report {fault:#x}, warning {warning:#x}")
+        except Exception as error:
+            self._log(f"motor {index + 1} fault report failed: {error}")
+
+    def _alert(self):
+        parts = []
+        if self.connected and not self.has_gripper:
+            parts.append(NO_GRIPPER_ALERT)
+        bad = [f"motor {index + 1} reports fault code {code}" for index, code in enumerate(self.codes) if code]
+        if self.connected and bad:
+            parts.append("Check this arm: " + ", ".join(bad) + ". Power on again to clear it")
+        return ". ".join(parts) or None
+
     def _gripper_back(self):
         try:
             device, _ = self.spare.robstride_ping_host_id(C.HOST_ID, 150)
@@ -240,6 +256,7 @@ class Arm:
             self.trajectory = None
             if not self.cooling:
                 self.fault = None
+            self.codes = [None] * 7
             self.gripper_stalled = False
             for motor, position, offset, (kp, kd) in zip(self.motors, q, self.offset, C.GAINS):
                 motor.send_mit(float(position - offset), 0.0, kp, kd, 0.0)
@@ -371,6 +388,8 @@ class Arm:
                 if now - self.code_logged > 0.25:
                     self.code_logged = now
                     self._log(f"motor {index + 1} status code {code}")
+                    if code:
+                        threading.Thread(target=self._report_fault, args=(index, motor), daemon=True).start()
             self.measured[index] = state.pos + self.offset[index]
             self.velocity[index] = state.vel if math.isfinite(state.vel) else 0.0
             self.effort[index] = state.torq if math.isfinite(state.torq) else 0.0
@@ -511,7 +530,7 @@ class Arm:
             return {
                 "name": self.name, "channel": self.channel, "connected": self.connected, "powered": self.torque,
                 "motors_answering": list(self.answering), "fault": self.fault, "cooling": self.cooling, "note": self.note,
-                "alert": NO_GRIPPER_ALERT if self.connected and not self.has_gripper else None,
+                "alert": self._alert(), "has_gripper": self.has_gripper,
                 "joints_deg": [round(math.degrees(v), 2) for v in self.measured[:6]],
                 "command_deg": [round(math.degrees(v), 2) for v in self.command[:6]],
                 "velocity_deg_s": [round(math.degrees(v), 1) for v in self.velocity[:6]],

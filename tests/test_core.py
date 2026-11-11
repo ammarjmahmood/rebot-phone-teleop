@@ -244,3 +244,34 @@ def test_arm_runs_without_its_gripper_and_picks_it_up_again(robot):
     assert robot.power_on("left")["powered"] == ["left"]
     assert unit.arm.has_gripper
     assert robot.status()["arms"]["left"]["alert"] is None
+
+
+def test_motor_fault_code_shows_as_an_alert(robot):
+    arm = robot.units["left"].arm
+    arm.codes[0] = 16
+    assert "motor 1 reports fault code 16" in robot.status()["arms"]["left"]["alert"]
+
+
+def test_recorder_saves_states_and_camera_frames(robot, tmp_path):
+    import json
+    from types import SimpleNamespace
+    from rebot_teleop.recorder import Recorder
+
+    class Camera:
+        count = 0
+
+        def jpeg_bytes(self):
+            Camera.count += 1
+            return b"\xff\xd8frame", Camera.count
+
+    recorder = Recorder(robot, SimpleNamespace(cameras={"head": Camera()}), SimpleNamespace(active=True), root=tmp_path)
+    started = recorder.start()
+    assert started["recording"]
+    assert wait_until(lambda: recorder.samples >= 5 and recorder.frames["head"] >= 3)
+    done = recorder.stop()
+    assert not done["recording"] and done["error"] is None
+    folder = tmp_path / done["name"]
+    rows = [json.loads(line) for line in (folder / "states.jsonl").read_text().splitlines()]
+    assert len(rows) >= 5 and "joints_deg" in rows[0]["arms"]["left"]
+    assert (folder / "head.mjpg").read_bytes().startswith(b"\xff\xd8")
+    assert len((folder / "head.times.txt").read_text().splitlines()) == done["frames"]["head"]

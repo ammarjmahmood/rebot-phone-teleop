@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from rebot_teleop import config as C
 from rebot_teleop import links, twin
+from rebot_teleop.recorder import Recorder
 from rebot_teleop.usb_link import QuestUsb
 from rebot_teleop.cameras import Cameras
 from rebot_teleop.kin import top_down
@@ -75,6 +76,7 @@ def create_app(sim=False, arms=("left", "right"), start_hardware=True):
     sequencer = Sequencer(robot, lift)
     gist = links.Gist()
     usb = QuestUsb()
+    recorder = Recorder(robot, cameras, teleop)
     cap_runs = {"current": None, "events": [], "seq": 0}
     scene_cache = {}
 
@@ -88,6 +90,7 @@ def create_app(sim=False, arms=("left", "right"), start_hardware=True):
                 gist.run_forever()
                 usb.start()
         yield
+        recorder.stop()
         teleop.stop()
         robot.close()
         cameras.close()
@@ -118,7 +121,7 @@ def create_app(sim=False, arms=("left", "right"), start_hardware=True):
 
     def full_status():
         return {
-            **robot.status(), "teleop": teleop.status(), "sequencer": sequencer.status(), "lift": lift.status(),
+            **robot.status(), "teleop": teleop.status(), "record": recorder.status(), "sequencer": sequencer.status(), "lift": lift.status(),
             "cameras": cameras.status(), "links": links.urls(), "gist": {"url": gist.url, "status": gist.status}, "usb": usb.status(), "time": time.time(),
         }
 
@@ -346,6 +349,14 @@ def create_app(sim=False, arms=("left", "right"), start_hardware=True):
         data = await body(request)
         return await asyncio.to_thread(teleop.start, data.get("source", "dashboard"))
 
+    @app.post("/api/record/start")
+    async def record_start():
+        return await asyncio.to_thread(recorder.start)
+
+    @app.post("/api/record/stop")
+    async def record_stop():
+        return await asyncio.to_thread(recorder.stop)
+
     @app.post("/api/teleop/stop")
     async def teleop_stop():
         return teleop.stop()
@@ -474,7 +485,7 @@ def create_app(sim=False, arms=("left", "right"), start_hardware=True):
         tick = 0
         try:
             while True:
-                message = {"twin": robot.twin(), "arms": {n: u.status() for n, u in robot.units.items()}, "teleop": teleop.status(), "sequencer": sequencer.status(), "lift": lift.status(), "sim": robot.sim}
+                message = {"twin": robot.twin(), "arms": {n: u.status() for n, u in robot.units.items()}, "teleop": teleop.status(), "record": recorder.status(), "sequencer": sequencer.status(), "lift": lift.status(), "sim": robot.sim}
                 if tick % 10 == 0:
                     message.update({"cameras": cameras.status(), "links": links.urls(), "usb": usb.status(), "gist": {"url": gist.url, "status": gist.status}, "can": robot.status()["can"]})
                 await websocket.send_text(json.dumps(message))

@@ -61,7 +61,7 @@ function pills() {
     const cls = a.fault ? 'bad' : a.powered ? 'ok' : a.connected ? 'blue' : 'warn';
     const text = a.cooling ? 'over temperature, cooling at home' : a.fault ? 'fault' : a.powered ? 'powered' : a.connected ? 'connected, torque off' : 'offline';
     out.push(el('span', { class: 'pill ' + cls, title: a.note || '' }, `${name}: ${text}`));
-    if (a.alert) out.push(el('span', { class: 'pill warn', title: a.alert }, `${name}: no gripper`));
+    if (a.alert) out.push(el('span', { class: 'pill warn', title: a.alert }, `${name}: ${a.has_gripper === false ? 'no gripper' : 'motor fault'}`));
   }
   const t = state.teleop;
   if (t.active) out.push(el('span', { class: 'pill blue' }, `teleop ${t.source || ''} ${t.input_hz} Hz`));
@@ -147,14 +147,14 @@ function cameraList() {
   return CAMERA_ORDER.filter(n => names.includes(n)).concat(names.filter(n => !CAMERA_ORDER.includes(n)));
 }
 function renderCameras() {
-  const targets = [['home', 'cams-home', n => n === 'head'], ['home', 'cams-wrists', n => n !== 'head'], ['policy', 'cams-policy', () => true]];
+  const targets = [['home', 'cams-home', n => n === 'head'], ['home', 'cams-wrists', n => n !== 'head'], ['teleop', 'cams-tele', n => n !== 'head'], ['policy', 'cams-policy', () => true]];
   for (const [tab, id, wanted] of targets) {
     const box = $(id);
     const live = state.tab === tab && !state.camsPaused;
     const names = cameraList().filter(wanted);
     if (box.dataset.names !== names.join() + live) {
       box.dataset.names = names.join() + live;
-      box.replaceChildren(...(names.length ? names.map((n, i) => el('div', { class: 'cam' + (i === 0 && id !== 'cams-wrists' ? ' big' : '') }, el('img', { src: live ? `/api/camera/${n}.mjpg` : '', alt: '' }), el('span', {}, n))) : [el('div', { class: 'muted' }, 'No cameras configured')]));
+      box.replaceChildren(...(names.length ? names.map((n, i) => el('div', { class: 'cam' + (i === 0 && id !== 'cams-wrists' && id !== 'cams-tele' ? ' big' : '') }, el('img', { src: live ? `/api/camera/${n}.mjpg` : '', alt: '' }), el('span', {}, n))) : [el('div', { class: 'muted' }, 'No cameras configured')]));
     }
   }
   const tele = $('tele-cam');
@@ -168,6 +168,14 @@ function renderCameras() {
   }
 }
 $('cams-toggle').onclick = () => { state.camsPaused = !state.camsPaused; $('cams-toggle').textContent = state.camsPaused ? 'Resume' : 'Pause'; renderCameras(); };
+
+function renderRecord() {
+  const r = state.record;
+  if (!r) return;
+  $('tele-record').textContent = r.recording ? 'Stop recording' : 'Record teleop';
+  $('tele-record-status').textContent = r.error ? 'Recording failed: ' + r.error : r.recording ? `Recording ${Math.round(r.seconds)} s` : r.name ? `Saved ${r.name}, ${Math.round(r.seconds)} s` : '';
+}
+$('tele-record').onclick = () => act(state.record && state.record.recording ? '/api/record/stop' : '/api/record/start', {}).then(r => { state.record = r; renderRecord(); });
 
 function renderTeleop() {
   const t = state.teleop;
@@ -340,6 +348,7 @@ function connect() {
     if (m.links) state.links = m.links;
     if (m.gist) state.gist = m.gist;
     if (m.usb) state.usb = m.usb;
+    if (m.record) { state.record = m.record; renderRecord(); }
     for (const t of Object.values(twins)) t.update(m.twin, m.arms);
     pills();
     if (state.tab === 'home') { renderArms(); liftWidget('lift-home'); }

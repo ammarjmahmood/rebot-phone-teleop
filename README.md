@@ -9,6 +9,7 @@ Everything for the two armed reBot (two Seeed B601 RS arms on a post) in plain P
   * **Policy**: type an instruction and watch Claude write and run robot code, or run Python yourself.
 * **Quest VR** at `https://<jetson>:8443/quest`: squeeze grip to move that arm, trigger closes the gripper. Works with one arm or both. The link is also kept on the GitHub gist bookmark.
 * **Phone** at `https://<jetson>:8443/phone`: touch sticks drive the gripper tip.
+* **Teleop recording**: the Record teleop button on the Teleop tab saves a folder in `~/.rebot-teleop/recordings/`: `states.jsonl` (both arms at 50 Hz), one `.mjpg` and `.times.txt` per camera, and `meta.json`. It is not a rosbag, since there is no ROS here.
 * **Claude Code**: the `rebot` MCP server is registered for every `claude` session on the Jetson (code as policy).
 
 ## Run

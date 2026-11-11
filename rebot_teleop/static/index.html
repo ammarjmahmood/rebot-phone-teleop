@@ -59,6 +59,7 @@
     <div class="panel grow2">
       <div class="panel-head"><b>Live camera</b><span class="grow"></span><span id="tele-cam-buttons"></span></div>
       <div class="bigcam"><img id="tele-cam" alt=""></div>
+      <div class="cams wrists" id="cams-tele"></div>
     </div>
     <div class="panel side">
       <div class="panel-head"><b>Start teleop</b></div>
@@ -83,6 +84,8 @@
       <div class="buttons">
         <button class="go" id="tele-start">Ready arms for teleop</button>
         <button id="tele-stop">End teleop</button>
+        <button id="tele-record" class="danger">Record teleop</button>
+        <span class="muted" id="tele-record-status"></span>
       </div>
       <div class="settings">
         <label>You stand <select id="tele-view"><option value="behind">behind the robot</option><option value="front">facing the robot</option><option value="left">at its left</option><option value="right">at its right</option></select></label>
