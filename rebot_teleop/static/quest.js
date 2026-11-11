@@ -13,8 +13,10 @@ function connect() {
     if (m.type !== 'status' && m.type !== 'started') return;
     lastStatus = m.arms || lastStatus;
     if (m.type === 'status' && m.t) { rtt = Date.now() - m.t; const tl = m.teleop || {}; $('link').textContent = `Round trip ${rtt} ms, ${tl.input_hz || 0} frames/s, ${tl.dropped || 0} dropped`; }
-    const chips = Object.entries(m.arms || {}).map(([n, a]) => `<span class="${a.ready ? 'ok' : 'warn'}">${n}: ${a.ready ? 'ready' : a.connected ? 'torque off' : 'offline'}</span>`);
+    const chips = Object.entries(m.arms || {}).map(([n, a]) => `<span class="${a.ready ? 'ok' : 'warn'}">${n}: ${a.ready ? 'ready' : a.fault ? 'FAULT' : a.connected ? 'torque off' : 'offline'}</span>`);
     $('arms').innerHTML = chips.join('');
+    const faults = Object.entries(m.arms || {}).filter(([, a]) => a.fault).map(([n, a]) => `${n} arm: ${a.fault}`);
+    if (faults.length) status(faults.join(' '));
     if (m.type === 'started' && m.offline && m.offline.length) status(`Ready with ${m.powered.join(' and ') || 'no arm'}. ${m.offline.join(' and ')} offline.`);
   };
   ws.onclose = () => { status('Connection lost, reconnecting. The arms hold.'); setTimeout(connect, 500); };

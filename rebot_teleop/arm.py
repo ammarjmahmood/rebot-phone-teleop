@@ -31,6 +31,9 @@ def min_jerk(start, goal, speed, accel, dt):
     return out
 
 
+STATUS_BITS = ("undervoltage", "overcurrent", "over temperature", "encoder fault", "stall overload", "not calibrated")
+LOAD_WINDOW_S = 10.0
+RATED = np.array([C.RATED_NM[model] for _, model in C.MOTORS])
 NO_GRIPPER_ALERT = "Gripper motor 7 is not answering. This arm is running without its gripper. After fixing the cable, press Power on to pick it up"
 
 
@@ -52,6 +55,9 @@ class Arm:
         self.answering = []
         self.codes = [None] * 7
         self.code_logged = 0.0
+        self.faulted = set()
+        self.load2 = np.zeros(7)
+        self.load_at = 0.0
         self.offset = np.zeros(7)
         self.measured = np.zeros(7)
         self.velocity = np.zeros(7)
@@ -163,13 +169,58 @@ class Arm:
         except Exception as error:
             self._log(f"motor {index + 1} fault report failed: {error}")
 
+    def _motor_fault(self, index, motor, code):
+        names = ", ".join(name for bit, name in enumerate(STATUS_BITS) if code >> bit & 1) or f"code {code}"
+        joint = "Gripper" if index == 6 else f"Joint {index + 1}"
+        load = math.sqrt(self.load2[index])
+        text = f"{joint} motor cut out: {names}. It averaged {load:.0f} Nm over the last {LOAD_WINDOW_S:.0f} s and can hold {RATED[index]:.0f} Nm for long. Let the arm hang, then press Power on to reset it"
+        error = math.degrees(self.command[index] - self.measured[index])
+        self._log(f"{text}; last torque {self.effort[index]:.1f} Nm, position error {error:.1f} deg, joint at {math.degrees(self.measured[index]):.0f} deg")
+        self.faulted.add(index)
+        if not self.cooling:
+            self.fault = text
+        threading.Thread(target=self._report_fault, args=(index, motor), daemon=True).start()
+
+    def _reset_motors(self):
+        with self.lock:
+            bad = sorted(i for i in self.faulted if i < len(self.motors))
+            if not bad:
+                return
+            for index in bad:
+                try:
+                    self.motors[index].clear_error()
+                except Exception as error:
+                    self._log(f"motor {index + 1} would not clear its fault: {error}")
+            self.command[:len(self.motors)] = self.measured[:len(self.motors)]
+            self.target[:6] = np.clip(self.measured[:6], LOWER, UPPER)
+            self.rate = np.zeros(7)
+            self.trajectory = None
+        time.sleep(0.05)
+        with self.lock:
+            for index in bad:
+                self.motors[index].enable()
+                self.load2[index] = 0.0
+            self.faulted.clear()
+            self.codes = [None] * 7
+            if not self.cooling:
+                self.fault = None
+        self._log("reset motor " + ", ".join(str(i + 1) for i in bad) + " after its fault; holding where the arm is")
+
+    def _overloaded(self):
+        if not self.torque:
+            return []
+        load = np.sqrt(self.load2[:6])
+        return [(i + 1, float(load[i]), float(RATED[i])) for i in range(6) if load[i] > RATED[i] * 1.05 and i not in self.faulted]
+
+    def _alert_tags(self):
+        return (["no gripper"] if self.connected and not self.has_gripper else []) + (["overloaded"] if self._overloaded() else [])
+
     def _alert(self):
         parts = []
         if self.connected and not self.has_gripper:
             parts.append(NO_GRIPPER_ALERT)
-        bad = [f"motor {index + 1} reports fault code {code}" for index, code in enumerate(self.codes) if code]
-        if self.connected and bad:
-            parts.append("Check this arm: " + ", ".join(bad) + ". Support the arm; turning its power supply off and on may clear it")
+        for joint, load, rated in self._overloaded():
+            parts.append(f"Joint {joint} is holding {load:.0f} Nm, above the {rated:.0f} Nm it can hold for long. It will cut out if it stays there, so bring the arm in or lower it")
         return ". ".join(parts) or None
 
     def _gripper_back(self):
@@ -236,6 +287,7 @@ class Arm:
         if not self.connected and not self.connect():
             raise ValueError(self.note or f"{self.name} arm is not reachable")
         if self.torque:
+            self._reset_motors()
             return
         try:
             from motorbridge import Mode
@@ -247,6 +299,11 @@ class Arm:
             self.offset = self._wrap_offsets(self.read_positions())
             q = self.read_positions()
             for motor in self.motors:
+                try:
+                    motor.clear_error()
+                except Exception:
+                    pass
+            for motor in self.motors:
                 motor.ensure_mode(mit, 1000)
             self._raise_torque_limits()
             self.command = q.copy()
@@ -257,6 +314,8 @@ class Arm:
             if not self.cooling:
                 self.fault = None
             self.codes = [None] * 7
+            self.faulted.clear()
+            self.load2 = np.zeros(7)
             self.gripper_stalled = False
             for motor, position, offset, (kp, kd) in zip(self.motors, q, self.offset, C.GAINS):
                 motor.send_mit(float(position - offset), 0.0, kp, kd, 0.0)
@@ -377,6 +436,8 @@ class Arm:
     def _feedback(self, temperatures):
         now = time.monotonic()
         fresh = False
+        blend = min(max(now - self.load_at, 0.0) / LOAD_WINDOW_S, 1.0) if self.load_at else 0.0
+        self.load_at = now
         for index, motor in enumerate(self.motors):
             state = motor.get_state()
             if state is None or not math.isfinite(state.pos):
@@ -385,14 +446,15 @@ class Arm:
             code = getattr(state, "status_code", None)
             if code != self.codes[index]:
                 self.codes[index] = code
-                if now - self.code_logged > 0.25:
+                if code:
+                    self._motor_fault(index, motor, code)
+                elif now - self.code_logged > 0.25:
                     self.code_logged = now
                     self._log(f"motor {index + 1} status code {code}")
-                    if code:
-                        threading.Thread(target=self._report_fault, args=(index, motor), daemon=True).start()
             self.measured[index] = state.pos + self.offset[index]
             self.velocity[index] = state.vel if math.isfinite(state.vel) else 0.0
             self.effort[index] = state.torq if math.isfinite(state.torq) else 0.0
+            self.load2[index] += (self.effort[index] ** 2 - self.load2[index]) * blend
             if temperatures and math.isfinite(state.t_mos):
                 self.temperatures[index] = round(float(state.t_mos), 1)
         if fresh:
@@ -518,6 +580,7 @@ class Arm:
             raise ValueError(f"Still {max(hot):.0f} C; usable again below {C.COOLED_C:.0f} C")
         self.cooling = False
         self.fault = None
+        self._reset_motors()
 
     @property
     def q(self):
@@ -530,7 +593,8 @@ class Arm:
             return {
                 "name": self.name, "channel": self.channel, "connected": self.connected, "powered": self.torque,
                 "motors_answering": list(self.answering), "fault": self.fault, "cooling": self.cooling, "note": self.note,
-                "alert": self._alert(), "has_gripper": self.has_gripper,
+                "alert": self._alert(), "alert_tags": self._alert_tags(), "has_gripper": self.has_gripper,
+                "load_nm": [round(float(v), 1) for v in np.sqrt(self.load2[:6])], "rated_nm": RATED[:6].tolist(),
                 "joints_deg": [round(math.degrees(v), 2) for v in self.measured[:6]],
                 "command_deg": [round(math.degrees(v), 2) for v in self.command[:6]],
                 "velocity_deg_s": [round(math.degrees(v), 1) for v in self.velocity[:6]],

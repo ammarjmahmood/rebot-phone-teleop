@@ -61,7 +61,7 @@ function pills() {
     const cls = a.fault ? 'bad' : a.powered ? 'ok' : a.connected ? 'blue' : 'warn';
     const text = a.cooling ? 'over temperature, cooling at home' : a.fault ? 'fault' : a.powered ? 'powered' : a.connected ? 'connected, torque off' : 'offline';
     out.push(el('span', { class: 'pill ' + cls, title: a.note || '' }, `${name}: ${text}`));
-    if (a.alert) out.push(el('span', { class: 'pill warn', title: a.alert }, `${name}: ${a.has_gripper === false ? 'no gripper' : 'motor fault'}`));
+    for (const tag of a.alert_tags || []) out.push(el('span', { class: 'pill warn', title: a.alert || '' }, `${name}: ${tag}`));
   }
   const t = state.teleop;
   if (t.active) out.push(el('span', { class: 'pill blue' }, `teleop ${t.source || ''} ${t.input_hz} Hz`));

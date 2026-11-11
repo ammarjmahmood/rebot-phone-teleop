@@ -32,6 +32,15 @@ class SimMotor:
     def ensure_mode(self, mode, timeout_ms=1000):
         pass
 
+    def clear_error(self):
+        self.bus.codes.pop(self.id, None)
+
+    def enable(self):
+        pass
+
+    def robstride_get_fault_report(self):
+        return 0, 0
+
     def send_mit(self, pos, vel, kp, kd, tau):
         with self.bus.lock:
             self.bus.goal[self.index] = pos
@@ -40,7 +49,7 @@ class SimMotor:
     def get_state(self):
         with self.bus.lock:
             self.bus.step()
-            return SimpleNamespace(pos=float(self.bus.pos[self.index]), vel=float(self.bus.vel[self.index]), torq=0.0, t_mos=self.bus.temperature)
+            return SimpleNamespace(pos=float(self.bus.pos[self.index]), vel=float(self.bus.vel[self.index]), torq=0.0, status_code=self.bus.codes.get(self.id, 0), t_mos=self.bus.temperature)
 
 
 class SimBus:
@@ -52,6 +61,7 @@ class SimBus:
         self.vel = np.zeros(7)
         self.enabled = False
         self.dead = set()
+        self.codes = {}
         self.at = time.monotonic()
         self.sent = 0
         self.temperature = 34.0

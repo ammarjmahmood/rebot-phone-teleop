@@ -246,10 +246,26 @@ def test_arm_runs_without_its_gripper_and_picks_it_up_again(robot):
     assert robot.status()["arms"]["left"]["alert"] is None
 
 
-def test_motor_fault_code_shows_as_an_alert(robot):
-    arm = robot.units["left"].arm
-    arm.codes[0] = 16
-    assert "motor 1 reports fault code 16" in robot.status()["arms"]["left"]["alert"]
+def test_motor_fault_stops_the_arm_and_power_on_resets_it(robot):
+    unit = robot.units["left"]
+    robot.power_on("left")
+    bus = robot.factory.buses[unit.arm.channel]
+    bus.codes[1] = 16
+    assert wait_until(lambda: unit.arm.fault is not None)
+    assert "Joint 1 motor cut out: stall overload" in unit.arm.fault
+    assert not unit.ready and unit.arm.torque
+    robot.power_on("left")
+    assert wait_until(lambda: unit.arm.fault is None and unit.ready)
+    assert 1 not in bus.codes
+    assert np.allclose(unit.arm.command[:6], unit.arm.q, atol=math.radians(1))
+
+
+def test_overloaded_joint_raises_an_alert(robot):
+    unit = robot.units["left"]
+    robot.power_on("left")
+    unit.arm.load2[0] = 16.0 ** 2
+    status = robot.status()["arms"]["left"]
+    assert "overloaded" in status["alert_tags"] and "Joint 1 is holding 16 Nm" in status["alert"]
 
 
 def test_recorder_saves_states_and_camera_frames(robot, tmp_path):
