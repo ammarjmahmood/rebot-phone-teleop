@@ -174,6 +174,17 @@ def create_app(sim=False, arms=("left", "right"), start_hardware=True):
         lift.stop()
         return {"stopped": True}
 
+    @app.post("/api/hold")
+    async def hold():
+        sequencer.stop_flag.set()
+        robot.stop()
+        lift.stop()
+        try:
+            result = await asyncio.to_thread(robot.power_on, None)
+        except ValueError as error:
+            result = {"powered": [], "notes": [str(error)]}
+        return {"holding": result["powered"], "notes": result["notes"]}
+
     @app.post("/api/clear")
     async def clear():
         robot.clear_faults()

@@ -42,6 +42,7 @@ function showTab(tab) {
 
 $('stop').onclick = () => act('/api/stop', {}, 'Holding');
 document.addEventListener('keydown', e => { if (e.code === 'Space' && !['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) { e.preventDefault(); act('/api/stop', {}, 'Holding'); } });
+$('hold-here').onclick = () => act('/api/hold', {}).then(r => toast('Holding: ' + (r.holding.join(', ') || 'no arm') + (r.notes.length ? '. ' + r.notes.join('; ') : ''), r.holding.length > 0));
 $('power-all').onclick = () => act('/api/power', { on: true }).then(r => toast('Powered: ' + (r.powered.join(', ') || 'none') + (r.notes.length ? '. ' + r.notes.join('; ') : ''), r.notes.length === 0));
 for (const arm of ['left', 'right']) $('power-' + arm).onclick = () => act('/api/power', { arm, on: true }, arm + ' arm holding');
 $('off-all').onclick = () => { if (confirm('Turn torque off on both arms? They will drop under gravity, so hold them.')) act('/api/power', { on: false }, 'Torque off'); };

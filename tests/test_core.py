@@ -362,3 +362,18 @@ def test_motor_that_cuts_out_is_caught_and_lowered_until_it_holds(robot):
     assert "caught" in arm.fault and not unit.ready
     robot.power_on("left")
     assert wait_until(lambda: arm.fault is None and unit.ready)
+
+
+def test_hold_here_holds_a_hand_placed_arm_where_it_is():
+    from rebot_teleop.server import create_app
+    with TestClient(create_app(sim=True)) as client:
+        robot = client.app.state.robot
+        assert wait_until(lambda: all(u.arm.connected for u in robot.units.values()))
+        unit = robot.units["left"]
+        placed = [-40.0, 120.0, 60.0, 20.0, 10.0, 0.0]
+        robot.factory.buses[unit.arm.channel].move_by_hand(placed)
+        assert wait_until(lambda: abs(unit.arm.q[0] - math.radians(-40.0)) < math.radians(0.5))
+        data = client.post("/api/hold", json={}).json()
+        assert sorted(data["holding"]) == ["left", "right"]
+        time.sleep(0.5)
+        assert unit.arm.torque and np.max(np.abs(np.degrees(unit.arm.q) - placed)) < 0.5
