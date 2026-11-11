@@ -169,7 +169,7 @@ class Arm:
             parts.append(NO_GRIPPER_ALERT)
         bad = [f"motor {index + 1} reports fault code {code}" for index, code in enumerate(self.codes) if code]
         if self.connected and bad:
-            parts.append("Check this arm: " + ", ".join(bad) + ". Power on again to clear it")
+            parts.append("Check this arm: " + ", ".join(bad) + ". Support the arm; turning its power supply off and on may clear it")
         return ". ".join(parts) or None
 
     def _gripper_back(self):
