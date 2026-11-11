@@ -135,6 +135,11 @@ def motor_report(hours: float = 24.0) -> str:
         return f"Error: {error}"
 
 
+@server.tool(description="Heavy poses switch. on=true lets the arms go to and hold poses that use up a joint's budget: no reach guard in teleop, no rests or refusals in sequences, and the arm only relaxes at 95% of the budget instead of 80%. The timer still shows. on=false puts the protections back")
+def set_heavy_poses(on: bool) -> str:
+    return guarded(robot()._call, "POST", "/api/limits", {"heavy": bool(on)})
+
+
 @server.tool(description="Play a saved sequence and wait until it finishes")
 def play_sequence(name: str) -> str:
     return guarded(robot().play, name)

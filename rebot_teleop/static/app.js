@@ -42,6 +42,7 @@ function showTab(tab) {
 
 $('stop').onclick = () => act('/api/stop', {}, 'Holding');
 document.addEventListener('keydown', e => { if (e.code === 'Space' && !['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) { e.preventDefault(); act('/api/stop', {}, 'Holding'); } });
+document.querySelectorAll('.heavy-switch').forEach(box => box.onchange = () => act('/api/limits', { heavy: box.checked }, box.checked ? 'Heavy poses on: no reach limit or sequence rests; the arm relaxes only at 95% of the budget' : 'Heavy poses off: normal protection'));
 $('motor-report').onclick = () => window.open('/api/motorlog/report?format=text&hours=24', '_blank');
 $('hold-here').onclick = () => act('/api/hold', {}).then(r => toast('Holding: ' + (r.holding.join(', ') || 'no arm') + (r.notes.length ? '. ' + r.notes.join('; ') : ''), r.holding.length > 0));
 $('power-all').onclick = () => act('/api/power', { on: true }).then(r => toast('Powered: ' + (r.powered.join(', ') || 'none') + (r.notes.length ? '. ' + r.notes.join('; ') : ''), r.notes.length === 0));
@@ -89,6 +90,7 @@ function pills() {
   if (t.active) out.push(el('span', { class: 'pill blue' }, `teleop ${t.source || ''} ${t.input_hz} Hz`));
   if (state.sequencer.playing) out.push(el('span', { class: 'pill blue' }, 'playing ' + state.sequencer.playing));
   if (state.sequencer.recording) out.push(el('span', { class: 'pill bad' }, 'recording ' + state.sequencer.recording.seconds + ' s'));
+  if (state.heavy) out.push(el('span', { class: 'pill warn', title: 'No reach limit or sequence rests; the arm relaxes only at 95% of the budget' }, 'heavy poses on'));
   if (state.sim) out.push(el('span', { class: 'pill' }, 'simulated arms'));
   $('pills').replaceChildren(...out);
 }
@@ -346,6 +348,7 @@ function renderPlan() {
   const p = state.plan;
   if (!p) { $('seq-plan').textContent = ''; return; }
   const parts = [`Motor check: about ${Math.round(p.seconds)} s at ${p.speed.toFixed(2)}x`];
+  if (p.heavy) parts.push('heavy poses on, so it plays every step without rests and the timer still shows');
   if (p.rest_s) parts.push(`including ${p.rest_s} s of rests so the shoulder motors can recover`);
   else parts.push('with no rests needed');
   $('seq-plan').replaceChildren(el('div', { class: p.ok ? 'muted' : 'fault' }, parts.join(', ') + '.'), ...p.problems.map(t => el('div', { class: 'fault' }, t)));
@@ -476,7 +479,8 @@ function connect() {
   const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws/state');
   ws.onmessage = event => {
     const m = JSON.parse(event.data);
-    state.arms = m.arms; state.teleop = m.teleop; state.sequencer = m.sequencer; state.lift = m.lift; state.sim = m.sim;
+    state.arms = m.arms; state.teleop = m.teleop; state.sequencer = m.sequencer; state.lift = m.lift; state.sim = m.sim; state.heavy = !!m.heavy;
+    document.querySelectorAll('.heavy-switch').forEach(box => { if (document.activeElement !== box) box.checked = state.heavy; });
     if (m.cameras) state.cameras = m.cameras;
     if (m.links) state.links = m.links;
     if (m.gist) state.gist = m.gist;

@@ -40,6 +40,7 @@
       <div class="buttons">
         <button class="go" id="hold-here" title="Stops any motion and holds every connected arm exactly where it is now">Hold here</button>
         <button class="small" id="motor-report" title="Which poses used each joint's budget most and least over the last day, with the joint angles of every relax or fault">Motor report</button>
+        <label class="heavy-toggle" title="Lets the arms go to and hold heavy poses: no reach limit in teleop, no rests or refusals in sequences, and the arm only relaxes itself at 95% of the budget. The timer still shows"><input type="checkbox" class="heavy-switch"> Heavy poses</label>
         <button class="go" id="power-all">Power on both</button>
         <button class="go" id="power-left">Power on left</button>
         <button class="go" id="power-right">Power on right</button>
@@ -84,6 +85,7 @@
       <div class="muted small-text">Lowest latency: Quest on a USB C cable to the Jetson, then <b>http://localhost:8081/quest</b>. <span id="usb-status"></span></div>
       <div class="muted small-text">Bookmark: <a id="gist-link" target="_blank">GitHub gist</a> <span id="gist-status"></span></div>
       <div class="buttons">
+        <label class="heavy-toggle" title="No reach limit: the arm follows your hand all the way out and only relaxes at 95% of the budget"><input type="checkbox" class="heavy-switch"> Heavy poses</label>
         <button class="go" id="tele-start">Ready arms for teleop</button>
         <button id="tele-stop">End teleop</button>
         <button id="tele-record" class="danger">Record teleop</button>

@@ -1,7 +1,7 @@
 const $ = id => document.getElementById(id);
 const CAMERAS = ['head', 'left', 'right'];
 let ws = null, session = null, refSpace = null, gl = null, panel = null;
-let cameraIndex = 0, panelOn = true, lastButtons = {}, gripWas = {}, lastStatus = {}, seq = 0, rtt = null, hud = null, hudDirty = true, pads = {}, budgetWas = {}, lastTeleop = {};
+let cameraIndex = 0, panelOn = true, lastButtons = {}, gripWas = {}, lastStatus = {}, seq = 0, rtt = null, hud = null, hudDirty = true, pads = {}, budgetWas = {}, lastTeleop = {}, lastHeavy = false;
 
 function status(text) { $('status').textContent = text; }
 
@@ -13,6 +13,7 @@ function connect() {
     if (m.type !== 'status' && m.type !== 'started') return;
     lastStatus = m.arms || lastStatus;
     lastTeleop = m.teleop || lastTeleop;
+    if (m.heavy !== undefined) lastHeavy = !!m.heavy;
     hudDirty = true;
     budgetAlerts(m.arms || {});
     if (m.type === 'status' && m.t) { rtt = Date.now() - m.t; const tl = m.teleop || {}; $('link').textContent = `Round trip ${rtt} ms, ${tl.input_hz || 0} frames/s, ${tl.dropped || 0} dropped`; }
@@ -90,6 +91,7 @@ function drawHud() {
     x.font = '26px sans-serif';
     x.fillText(budgetText(a, name), bx + bw + 14, y + rowH / 2);
   });
+  if (lastHeavy) { x.fillStyle = '#ffb300'; x.font = 'bold 20px sans-serif'; x.textBaseline = 'top'; x.fillText('HEAVY POSES ON', c.width - 200, 6); }
   const gl2 = gl;
   gl2.bindTexture(gl2.TEXTURE_2D, hud.texture);
   gl2.texImage2D(gl2.TEXTURE_2D, 0, gl2.RGBA, gl2.RGBA, gl2.UNSIGNED_BYTE, c);

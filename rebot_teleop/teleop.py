@@ -241,6 +241,9 @@ class Teleop:
 
     def _guard(self, unit, hand, goal_p, goal_r, q):
         arm = unit.arm
+        if self.robot.heavy:
+            hand.guarded = False
+            return q
         watch = [j for j in range(6) if arm.heat.used[j] >= C.REACH_GUARD_AT]
         if not watch:
             hand.guarded = False

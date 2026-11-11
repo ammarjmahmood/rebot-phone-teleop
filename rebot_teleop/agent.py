@@ -18,6 +18,7 @@ State
   robot.wait_ready(arm=None)         waits while an arm relaxes to recover, then returns
   robot.motor_report(hours=24)       which poses used joint 1's budget most and least, and events with joint angles
   robot.table()                      table top height and how far its near edge is from the post (metres)
+  robot.heavy(on)                    heavy poses switch: on lets moves use up a joint's budget, relaxing only at 95%
 
 Table: moves that would take the gripper or wrist into the table are refused with an error that says so;
 go up and over, then down. Every move returns load: the torque each joint will hold at the goal, and
@@ -88,6 +89,9 @@ class Robot:
     def state(self):
         arms = self._call("GET", "/api/status")["arms"]
         return {name: {"joints_deg": a["joints_deg"], "tip_xyz": a["tip_xyz"], "gripper_m": a["gripper_m"], "powered": a["powered"], "connected": a["connected"], "note": a["note"] or a["fault"], "budget": a.get("heat")} for name, a in arms.items()}
+
+    def heavy(self, on=True):
+        return self._call("POST", "/api/limits", {"heavy": bool(on)})
 
     def table(self):
         return self._call("GET", "/api/table")

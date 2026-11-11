@@ -111,7 +111,7 @@ class Unit:
         for j in range(6):
             hold = float(arm.continuous[j])
             seconds = H.seconds_at(H.TABLES[arm.models[j]]["still"], load[j])
-            left = None if seconds == math.inf else max(0.0, (C.HEAT_LOWER - float(arm.heat.used[j])) * seconds)
+            left = None if seconds == math.inf else max(0.0, (arm.heat.limit - float(arm.heat.used[j])) * seconds)
             rows.append({"joint": j + 1, "nm": round(float(load[j]), 1), "hold_nm": hold, "seconds_before_relax": None if left is None else round(left)})
         worst = max(rows, key=lambda r: abs(r["nm"]) / r["hold_nm"])
         return {"worst": worst, "joints_nm": [r["nm"] for r in rows]}
@@ -182,6 +182,8 @@ class Robot:
         self.table = {**C.TABLE_DEFAULT, **C.load("table.json", {})}
         self.units = {name: Unit(name, self, factory) for name in names}
         self.listeners = []
+        self.heavy = False
+        self.set_heavy(bool(C.load("limits.json", {}).get("heavy", False)), save=False)
 
     def start(self):
         for unit in self.units.values():
@@ -250,6 +252,14 @@ class Robot:
             return np.radians(C.POSES_DEG[pose][name])
         raise ValueError(f"Unknown pose {pose}")
 
+    def set_heavy(self, on, save=True):
+        self.heavy = bool(on)
+        for unit in self.units.values():
+            unit.arm.heat.limit = C.HEAT_LOWER_HEAVY if self.heavy else C.HEAT_LOWER
+        if save:
+            C.save("limits.json", {"heavy": self.heavy})
+        return {"heavy": self.heavy, "relax_at_pct": round(C.HEAT_LOWER_HEAVY * 100 if self.heavy else C.HEAT_LOWER * 100)}
+
     def set_table(self, top=None, front=None):
         if top is not None:
             self.table["top"] = float(top)
@@ -301,7 +311,7 @@ class Robot:
         return out
 
     def status(self):
-        return {"sim": self.sim, "arms": {name: unit.status() for name, unit in self.units.items()}, "can": can_interfaces(), "table": self.table}
+        return {"sim": self.sim, "arms": {name: unit.status() for name, unit in self.units.items()}, "can": can_interfaces(), "table": self.table, "heavy": self.heavy}
 
 
 def clamp(q):

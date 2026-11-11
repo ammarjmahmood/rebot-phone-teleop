@@ -298,13 +298,15 @@ class Sequencer:
             total += seconds + rest
             resting += rest
             steps.append(entry)
-        return {"ok": not problems, "seconds": round(total, 1), "rest_s": round(resting), "steps": steps, "problems": problems, "speed": speed}
+        return {"ok": not problems or self.robot.heavy, "heavy": self.robot.heavy, "seconds": round(total, 1), "rest_s": 0 if self.robot.heavy else round(resting), "steps": steps, "problems": problems, "speed": speed}
 
     def _target_or_none(self, rise):
         target = self._rest_target(rise)
         return None if target < 0 else target
 
     def _prepare(self, index, step, speed):
+        if self.robot.heavy:
+            return True
         current = {n: u.arm.command[:6].copy() for n, u in self.robot.units.items() if u.arm.torque}
         if not current:
             return True

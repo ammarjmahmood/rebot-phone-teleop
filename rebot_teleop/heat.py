@@ -53,9 +53,11 @@ class Budget:
         self.models = list(models)
         self.used = np.zeros(len(self.models))
         self.rates = np.zeros(len(self.models))
+        self.limit = C.HEAT_LOWER
 
     def copy(self):
         other = Budget(self.models)
+        other.limit = self.limit
         other.used = self.used.copy()
         other.rates = self.rates.copy()
         return other
@@ -73,7 +75,7 @@ class Budget:
             self.used = np.clip(self.used - seconds / C.HEAT_COOL_S, 0.0, 1.5)
 
     def seconds_left(self, limit=None):
-        limit = C.HEAT_LOWER if limit is None else limit
+        limit = self.limit if limit is None else limit
         return [max(0.0, (limit - u) / r) if r > 0 else None for u, r in zip(self.used, self.rates)]
 
     def summary(self):
@@ -84,7 +86,7 @@ class Budget:
         else:
             worst = int(np.argmax(self.used))
         pct = round(float(self.used[worst]) * 100)
-        state = "lowering" if self.used[worst] >= C.HEAT_LOWER and left[worst] is not None else "warm" if self.used[worst] >= C.HEAT_WARN else "ok"
+        state = "lowering" if self.used[worst] >= self.limit and left[worst] is not None else "warm" if self.used[worst] >= C.HEAT_WARN else "ok"
         if not heating and self.used[worst] > 0.02:
             state = "cooling"
         return {

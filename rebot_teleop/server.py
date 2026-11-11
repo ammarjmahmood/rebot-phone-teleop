@@ -376,6 +376,15 @@ def create_app(sim=False, arms=("left", "right"), start_hardware=True):
     async def torque():
         return {"now": time.time(), "seconds": C.TORQUE_HISTORY_S, "arms": {name: unit.arm.torque_history() for name, unit in robot.units.items()}}
 
+    @app.get("/api/limits")
+    async def limits_get():
+        return {"heavy": robot.heavy}
+
+    @app.post("/api/limits")
+    async def limits_set(request: Request):
+        data = await body(request)
+        return robot.set_heavy(bool(data.get("heavy")))
+
     @app.get("/api/table")
     async def table_get():
         return robot.table
@@ -532,7 +541,7 @@ def create_app(sim=False, arms=("left", "right"), start_hardware=True):
         tick = 0
         try:
             while True:
-                message = {"twin": robot.twin(), "arms": {n: u.status() for n, u in robot.units.items()}, "teleop": teleop.status(), "record": recorder.status(), "sequencer": sequencer.status(), "lift": lift.status(), "sim": robot.sim}
+                message = {"twin": robot.twin(), "arms": {n: u.status() for n, u in robot.units.items()}, "teleop": teleop.status(), "record": recorder.status(), "sequencer": sequencer.status(), "lift": lift.status(), "sim": robot.sim, "heavy": robot.heavy}
                 if tick % 10 == 0:
                     message.update({"cameras": cameras.status(), "links": links.urls(), "usb": usb.status(), "gist": {"url": gist.url, "status": gist.status}, "can": robot.status()["can"]})
                 await websocket.send_text(json.dumps(message))
@@ -581,7 +590,7 @@ def create_app(sim=False, arms=("left", "right"), start_hardware=True):
                 now = time.monotonic()
                 if now - last_report > 0.2:
                     last_report = now
-                    report = {"type": "status", "t": sent, "teleop": teleop.status(), "arms": {n: {"ready": u.ready, "note": u.status()["note"], "fault": u.arm.fault, "connected": u.arm.connected, "heat": u.arm.heat.summary() if u.arm.torque else None, "rest": u.arm.rest_status()} for n, u in robot.units.items()}}
+                    report = {"type": "status", "t": sent, "teleop": teleop.status(), "arms": {n: {"ready": u.ready, "note": u.status()["note"], "fault": u.arm.fault, "connected": u.arm.connected, "heat": u.arm.heat.summary() if u.arm.torque else None, "rest": u.arm.rest_status()} for n, u in robot.units.items()}, "heavy": robot.heavy}
                     await websocket.send_text(json.dumps(report))
         except (WebSocketDisconnect, RuntimeError, ValueError):
             pass

@@ -605,3 +605,21 @@ def test_table_guard_refuses_moves_into_the_table_once_it_is_measured(robot):
         assert unit.table_hit(high) is None
     finally:
         robot.set_table(front=-1)
+
+
+def test_heavy_poses_switch_lifts_the_guard_and_sequence_rests():
+    from rebot_teleop.server import create_app
+    with TestClient(create_app(sim=True)) as client:
+        robot = client.app.state.robot
+        assert wait_until(lambda: all(u.arm.connected for u in robot.units.values()))
+        assert client.post("/api/limits", json={"heavy": True}).json()["relax_at_pct"] == 95
+        assert robot.heavy and robot.units["right"].arm.heat.limit == C.HEAT_LOWER_HEAVY
+        assert client.get("/api/status").json()["heavy"] is True
+        seq = client.app.state.sequencer
+        far = {"type": "pose", "arms": {"right": [1.4, 175.0, 147.1, 13.9, -13.0, -158.1]}, "speed_deg_s": 90, "pause_s": 120.0, "label": "reach out"}
+        plan = seq.plan({"name": "t", "steps": [far]})
+        assert plan["ok"] and plan["heavy"] and plan["problems"]
+        assert seq._prepare(0, far, 1.0) is True
+        client.post("/api/limits", json={"heavy": False})
+        assert not robot.heavy and robot.units["right"].arm.heat.limit == C.HEAT_LOWER
+        assert not seq.plan({"name": "t", "steps": [far]})["ok"]

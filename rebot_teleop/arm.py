@@ -279,7 +279,7 @@ class Arm:
             return
         if not self.torque or self.cooling or self.fault:
             return
-        over = [i for i in range(6) if self.heat.used[i] >= C.HEAT_LOWER and self.heat.rates[i] > 0]
+        over = [i for i in range(6) if self.heat.used[i] >= self.heat.limit and self.heat.rates[i] > 0]
         if over:
             worst = max(over, key=lambda i: self.heat.used[i])
             self._log(f"joint {worst + 1} used up its budget holding {abs(self.effort[worst]):.1f} Nm; relaxing at home; {self._pose_text()}")
@@ -318,7 +318,7 @@ class Arm:
         if self.rest_phase == "lowering" and self.trajectory is None:
             self.rest_phase = "recovering"
             self._log("relaxed at home; waiting for the motors to recover")
-        if self.rest_phase == "recovering" and self.trajectory is None and any(u >= C.HEAT_LOWER and r > 0 for u, r in zip(self.heat.used, self.heat.rates)):
+        if self.rest_phase == "recovering" and self.trajectory is None and any(u >= self.heat.limit and r > 0 for u, r in zip(self.heat.used, self.heat.rates)):
             self.rest_phase = "lowering"
             self._go_home()
         if self.rest_phase == "recovering" and float(np.max(self.heat.used)) <= self.rest_resume:
