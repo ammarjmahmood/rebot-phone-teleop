@@ -319,3 +319,40 @@ def test_torque_history_is_served():
         data = client.get("/api/torque").json()
     assert set(data["arms"]) == {"left", "right"}
     assert data["arms"]["left"]["peak"][:4] == [36.0, 36.0, 36.0, 14.0] and data["seconds"] == 60.0
+
+
+def test_overloaded_arm_lowers_itself_slowly_and_recovers(robot):
+    robot.power_on()
+    unit = robot.units["left"]
+    robot.go("ready", "left")
+    robot.wait(20)
+    arm = unit.arm
+    start = arm.q.copy()
+    with arm.lock:
+        arm.strain[0] = C.OVERLOAD_BUDGET_S + 1
+    assert wait_until(lambda: arm.resting, 3)
+    assert "lowering itself to rest" in arm.fault and not unit.ready and arm.torque
+    time.sleep(0.5)
+    assert np.max(np.abs(arm.q - start)) < math.radians(C.COOL_HOME_DEG_S)
+    assert wait_until(lambda: not arm.busy, 20)
+    assert np.max(np.abs(arm.command[:6] - arm.home_q)) < math.radians(0.5)
+    with arm.lock:
+        arm.strain[:] = 0.0
+    assert wait_until(lambda: not arm.resting, 3)
+    assert arm.fault is None and unit.ready
+
+
+def test_motor_that_cuts_out_is_caught_and_the_arm_lowers(robot):
+    robot.power_on()
+    unit = robot.units["left"]
+    robot.go("ready", "left")
+    robot.wait(20)
+    arm = unit.arm
+    bus = robot.factory.buses[arm.channel]
+    bus.codes[1] = 16
+    assert wait_until(lambda: arm.fault is not None and "caught" in arm.fault, 3)
+    assert 1 not in bus.codes and arm.torque and not unit.ready
+    assert wait_until(lambda: not arm.busy, 20)
+    assert np.max(np.abs(arm.command[:6] - arm.home_q)) < math.radians(0.5)
+    robot.power_on("left")
+    assert wait_until(lambda: arm.fault is None and unit.ready)

@@ -65,6 +65,9 @@ class Arm:
         self.load_at = 0.0
         self.pushing = np.zeros(6)
         self.blocked = np.zeros(6, dtype=bool)
+        self.strain = np.zeros(6)
+        self.resting = False
+        self.catches = []
         self.history = collections.deque(maxlen=int(C.TORQUE_HISTORY_S / C.TORQUE_BUCKET_S))
         self.bucket = np.zeros(7)
         self.bucket_at = 0.0
@@ -193,6 +196,73 @@ class Arm:
         if not self.cooling:
             self.fault = text
         threading.Thread(target=self._report_fault, args=(index, motor), daemon=True).start()
+        now = time.monotonic()
+        self.catches = [t for t in self.catches if now - t < C.CATCH_WINDOW_S]
+        if self.torque and index < 6 and len(self.catches) < C.CATCH_LIMIT:
+            self.catches.append(now)
+            threading.Thread(target=self._catch, args=(index, f"{joint} motor cut out: {names}"), daemon=True).start()
+
+    def _catch(self, index, what):
+        with self.lock:
+            if not self.torque or index >= len(self.motors):
+                return
+            try:
+                self.motors[index].clear_error()
+            except Exception as error:
+                self._log(f"could not catch motor {index + 1}: {error}")
+                return
+            self.trajectory = None
+            self.rate = np.zeros(7)
+            self.command[:6] = self.measured[:6]
+            self.target[:6] = np.clip(self.measured[:6], LOWER, UPPER)
+        time.sleep(0.03)
+        with self.lock:
+            if not self.torque or index >= len(self.motors):
+                return
+            self.command[:6] = self.measured[:6]
+            self.target[:6] = np.clip(self.measured[:6], LOWER, UPPER)
+        time.sleep(0.01)
+        with self.lock:
+            if not self.torque or index >= len(self.motors):
+                return
+            try:
+                self.motors[index].enable()
+            except Exception as error:
+                self._log(f"could not catch motor {index + 1}: {error}")
+                return
+            self.codes[index] = None
+            self.resting = True
+            if not self.cooling:
+                self.fault = f"{what}. It was caught and the arm is lowering itself to rest. Press Power on when it is down"
+            self._go_home()
+        self._log(f"caught motor {index + 1} and started lowering the arm to rest")
+
+    def _watch_load(self, dt):
+        self.strain = np.clip(self.strain + ((self.effort[:6] / RATED[:6]) ** 2 - 1.0) * dt, 0.0, 2 * C.OVERLOAD_BUDGET_S)
+        worst = int(np.argmax(self.strain))
+        if self.resting:
+            if self.trajectory is None and not self.faulted and self.strain[worst] < C.OVERLOAD_BUDGET_S * 0.25:
+                self.resting = False
+                if not self.cooling:
+                    self.fault = None
+                self._log("rested after the overload; ready again")
+        elif self.torque and not self.cooling and not self.fault and self.strain[worst] > C.OVERLOAD_BUDGET_S:
+            self.resting = True
+            self.fault = f"Joint {worst + 1} held more than it can sustain, so the arm is lowering itself to rest. It frees itself in about {C.OVERLOAD_BUDGET_S * 0.75:.0f} s, or press Power on to take over"
+            self._log(self.fault)
+            self._go_home()
+
+    def _end_rest(self):
+        with self.lock:
+            if not self.resting:
+                return
+            self.resting = False
+            self.strain *= 0.5
+            self.trajectory = None
+            self.target[:6] = self.command[:6]
+            self.rate = np.zeros(7)
+            if not self.cooling:
+                self.fault = None
 
     def _reset_motors(self):
         with self.lock:
@@ -303,6 +373,7 @@ class Arm:
             raise ValueError(self.note or f"{self.name} arm is not reachable")
         if self.torque:
             self._reset_motors()
+            self._end_rest()
             return
         try:
             from motorbridge import Mode
@@ -333,6 +404,9 @@ class Arm:
             self.load2 = np.zeros(7)
             self.pushing = np.zeros(6)
             self.blocked = np.zeros(6, dtype=bool)
+            self.strain = np.zeros(6)
+            self.resting = False
+            self.catches = []
             self.gripper_stalled = False
             for motor, position, offset, (kp, kd) in zip(self.motors, q, self.offset, C.GAINS):
                 motor.send_mit(float(position - offset), 0.0, kp, kd, 0.0)
@@ -479,7 +553,8 @@ class Arm:
     def _feedback(self, temperatures):
         now = time.monotonic()
         fresh = False
-        blend = min(max(now - self.load_at, 0.0) / LOAD_WINDOW_S, 1.0) if self.load_at else 0.0
+        dt = min(max(now - self.load_at, 0.0), 0.1) if self.load_at else 0.0
+        blend = min(dt / LOAD_WINDOW_S, 1.0)
         self.load_at = now
         for index, motor in enumerate(self.motors):
             state = motor.get_state()
@@ -505,6 +580,7 @@ class Arm:
             self.history.append((round(time.time(), 2), [round(float(v), 2) for v in self.bucket[:6]]))
             self.bucket = np.zeros(7)
             self.bucket_at = now
+        self._watch_load(dt)
         if fresh:
             self.feedback_at = now
             if self.note and self.note.startswith("No feedback"):
@@ -629,6 +705,7 @@ class Arm:
         self.cooling = False
         self.fault = None
         self._reset_motors()
+        self._end_rest()
 
     @property
     def q(self):
@@ -641,7 +718,8 @@ class Arm:
             return {
                 "name": self.name, "channel": self.channel, "connected": self.connected, "powered": self.torque,
                 "motors_answering": list(self.answering), "fault": self.fault, "cooling": self.cooling, "note": self.note,
-                "alert": self._alert(), "alert_tags": self._alert_tags(), "has_gripper": self.has_gripper,
+                "alert": self._alert(), "alert_tags": self._alert_tags(), "has_gripper": self.has_gripper, "resting": self.resting,
+                "strain_pct": [round(float(v) * 100 / C.OVERLOAD_BUDGET_S) for v in self.strain],
                 "load_nm": [round(float(v), 1) for v in np.sqrt(self.load2[:6])], "rated_nm": RATED[:6].tolist(),
                 "joints_deg": [round(math.degrees(v), 2) for v in self.measured[:6]],
                 "command_deg": [round(math.degrees(v), 2) for v in self.command[:6]],
