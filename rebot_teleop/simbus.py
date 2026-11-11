@@ -49,7 +49,7 @@ class SimMotor:
     def get_state(self):
         with self.bus.lock:
             self.bus.step()
-            return SimpleNamespace(pos=float(self.bus.pos[self.index]), vel=float(self.bus.vel[self.index]), torq=0.0, status_code=self.bus.codes.get(self.id, 0), t_mos=self.bus.temperature)
+            return SimpleNamespace(pos=float(self.bus.pos[self.index]), vel=float(self.bus.vel[self.index]), torq=float(self.bus.torque.get(self.index, 0.0)), status_code=self.bus.codes.get(self.id, 0), t_mos=self.bus.temperature)
 
 
 class SimBus:
@@ -63,6 +63,7 @@ class SimBus:
         self.dead = set()
         self.codes = {}
         self.held = set()
+        self.torque = {}
         self.at = time.monotonic()
         self.sent = 0
         self.temperature = 34.0

@@ -59,7 +59,7 @@ function pills() {
   const out = [];
   for (const [name, a] of Object.entries(state.arms)) {
     const cls = a.fault ? 'bad' : a.powered ? 'ok' : a.connected ? 'blue' : 'warn';
-    const text = a.cooling ? 'over temperature, cooling at home' : a.resting ? 'lowered to rest' : a.fault ? 'fault' : a.powered ? 'powered' : a.connected ? 'connected, torque off' : 'offline';
+    const text = a.cooling ? 'over temperature, cooling at home' : a.resting ? 'overloaded, lowering' : a.fault ? 'fault' : a.powered ? 'powered' : a.connected ? 'connected, torque off' : 'offline';
     out.push(el('span', { class: 'pill ' + cls, title: a.note || '' }, `${name}: ${text}`));
     for (const tag of a.alert_tags || []) out.push(el('span', { class: 'pill warn', title: a.alert || '' }, `${name}: ${tag}`));
   }
@@ -173,7 +173,7 @@ function renderArms() {
     armCard(name);
     const pill = $(`pill-${name}`);
     pill.className = 'pill ' + (a.fault ? 'bad' : a.powered ? 'ok' : a.connected ? 'blue' : 'warn');
-    pill.textContent = a.cooling ? 'over temperature' : a.resting ? 'lowered to rest' : a.fault ? 'fault' : a.powered ? `powered ${a.loop_hz} Hz` : a.connected ? 'torque off, hand guide' : 'offline';
+    pill.textContent = a.cooling ? 'over temperature' : a.resting ? 'overloaded, lowering' : a.fault ? 'fault' : a.powered ? `powered ${a.loop_hz} Hz` : a.connected ? 'torque off, hand guide' : 'offline';
     $(`note-${name}`).textContent = [a.alert, a.fault, a.note, a.warm].filter(Boolean).join('. ');
     $(`note-${name}`).className = a.fault ? 'fault' : 'note';
     for (let i = 0; i < 6; i++) {

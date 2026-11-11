@@ -66,6 +66,8 @@ class Arm:
         self.pushing = np.zeros(6)
         self.blocked = np.zeros(6, dtype=bool)
         self.strain = np.zeros(6)
+        self.quick2 = np.zeros(6)
+        self.rest_at = 0.0
         self.resting = False
         self.catches = []
         self.history = collections.deque(maxlen=int(C.TORQUE_HISTORY_S / C.TORQUE_BUCKET_S))
@@ -232,23 +234,32 @@ class Arm:
                 return
             self.codes[index] = None
             self.resting = True
+            self.rest_at = time.monotonic()
             if not self.cooling:
-                self.fault = f"{what}. It was caught and the arm is lowering itself to rest. Press Power on when it is down"
+                self.fault = f"{what}. It was caught and the arm lowers until it can hold the load. Press Power on to carry on"
             self._go_home()
-        self._log(f"caught motor {index + 1} and started lowering the arm to rest")
+        self._log(f"caught motor {index + 1}; lowering until the arm can hold the load")
 
     def _watch_load(self, dt):
         self.strain = np.clip(self.strain + ((self.effort[:6] / RATED[:6]) ** 2 - 1.0) * dt, 0.0, 2 * C.OVERLOAD_BUDGET_S)
+        self.quick2 += (self.effort[:6] ** 2 - self.quick2) * min(dt / 0.3, 1.0)
         worst = int(np.argmax(self.strain))
         if self.resting:
-            if self.trajectory is None and not self.faulted and self.strain[worst] < C.OVERLOAD_BUDGET_S * 0.25:
+            holdable = bool(np.all(np.sqrt(self.quick2) <= C.REST_FRACTION * RATED[:6]))
+            if self.trajectory is not None and holdable and time.monotonic() - self.rest_at > C.REST_SETTLE_S:
+                self.trajectory = None
+                self.target[:6] = self.command[:6]
+                self.rate = np.zeros(7)
+                self._log("lowered far enough; the arm can hold the load here")
+            if self.trajectory is None and not self.faulted:
                 self.resting = False
+                self.strain = np.minimum(self.strain, 0.7 * C.OVERLOAD_BUDGET_S)
                 if not self.cooling:
                     self.fault = None
-                self._log("rested after the overload; ready again")
         elif self.torque and not self.cooling and not self.fault and self.strain[worst] > C.OVERLOAD_BUDGET_S:
             self.resting = True
-            self.fault = f"Joint {worst + 1} held more than it can sustain, so the arm is lowering itself to rest. It frees itself in about {C.OVERLOAD_BUDGET_S * 0.75:.0f} s, or press Power on to take over"
+            self.rest_at = time.monotonic()
+            self.fault = f"Joint {worst + 1} held more than it can sustain, so the arm is lowering until it can hold the load"
             self._log(self.fault)
             self._go_home()
 
