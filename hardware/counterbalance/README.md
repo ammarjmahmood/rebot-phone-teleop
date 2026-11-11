@@ -43,7 +43,7 @@ Settings on every plate: Bambu PETG Basic, 0.24 mm layers, 4 walls, 25% gyroid, 
 
 | Item | Qty | Where | Cost (CAD) |
 |---|---|---|---|
-| [Everbilt 550 paracord, 50 ft](https://www.homedepot.ca/product/everbilt-diamond-braid-rope-550-paracord-medium-duty/1001927620), rated 110 lb | 1 | Home Depot SKU 1001927620, back of aisle 12 at Leaside | price in store only, about $10 |
+| [Everbilt 5/32 in x 50 ft nylon diamond braid paracord 550](https://www.homedepot.ca/product/everbilt-5-32-inch-x50-feet-nylon-diamond-braid-paracord-550/1000799547), 550 lb breaking strength | 1 | SKU 1000799547, aisle 16 bay 023 | $8.48 |
 | [Paulin M5-0.8 x 20 mm hex cap screw](https://www.homedepot.ca/product/paulin-m5-80-x-20mm-class-8-8-metric-hex-cap-screw-din-933-zinc-plated/1000128425) | 8 | SKU 1000128425, aisle 16 bay 015 | $0.47 each |
 | [Paulin M5-0.8 hex nut](https://www.homedepot.ca/product/paulin-m5-0-80-class-8-metric-hex-nut-din-934-zinc-plated/1000128517) | 8 | SKU 1000128517, aisle 16 bay 015 | $0.21 each |
 | [Paulin M8-1.25 x 40 mm hex cap screw](https://www.homedepot.ca/product/paulin-m8-1-25-x-40mm-class-8-8-metric-hex-cap-screw-din-931-partial-thread-zinc-plated/1000135048) | 2 | SKU 1000135048, aisle 16 bay 015 | $1.17 each |
@@ -57,7 +57,7 @@ Settings on every plate: Bambu PETG Basic, 0.24 mm layers, 4 walls, 25% gyroid, 
 
 Weight options per arm, cheapest first: two 4 L jugs with 3.4 L of water each (free, and you tune by pouring); three bricks in a bag; a [10 lb cast iron plate](https://www.canadiantire.ca/en/pdp/wa-ke-athletic-1-in-cast-iron-weight-plate-single-assorted-weights-1842013p.html) ($24.99 at Canadian Tire) plus a 5 lb one.
 
-Stock and aisles are from Home Depot Leaside (101 Wicksteed Ave, near Laird and Eglinton) on 2026-11-11. Total with water jugs: $20.20 of screws, nuts and carabiners plus the paracord (about $10, priced in store), so about $30 before tax, plus about $11 of filament. With cast iron plates (5 lb plate estimated at $13): about $106 plus filament.
+Stock and aisles are from Home Depot Leaside (101 Wicksteed Ave, near Laird and Eglinton) on 2026-11-11. Any 5/32 in (4 mm) 550 paracord works; same-aisle backups are the [reflective](https://www.homedepot.ca/product/everbilt-5-32-inch-x50-ft-paracord-550-reflective-mixed-colors/1001183706) and [camo](https://www.homedepot.ca/product/everbilt-5-32-inch-x50-ft-paracord-550-camo-colors/1001183707) versions at $9.98, and the [Everbilt 550 paracord](https://www.homedepot.ca/product/everbilt-diamond-braid-rope-550-paracord-medium-duty/1001927620) at the back of aisle 12. Total with water jugs: $28.68 before tax, about $32.41 with HST, plus about $11 of filament. With cast iron plates (5 lb plate estimated at $13): about $106 plus filament.
 
 Spring version instead of weights, both arms: 2 extension springs of about 0.62 N/mm (3.5 lbf/in) that can stretch 190 mm, 2 [Everbilt eye and hook turnbuckles](https://homedepot.ca/product/everbilt-5-1-2-inch-zinc-eye-hook-turnbuckle/1000769521), 2 [Everbilt 1/4 x 2 in eye bolts](https://homedepot.ca/product/everbilt-1-4-inch-x-2-inch-eye-bolt-with-hex-nut-zinc-1-pc-/1000769927), and 8 more M5 screws and nuts.
 
