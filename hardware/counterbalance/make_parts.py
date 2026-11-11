@@ -10,8 +10,8 @@ SEG = 96
 
 SQUARE_X = (-39.0, 39.6)
 SQUARE_Y = (-40.6, 42.5)
-DRUM_Z = (1.5, 11.0)
-GROOVE_R = 68.5
+DRUM_Z = (1.5, 16.0)
+GROOVE_R = 66.0
 FLANGE_R = 72.0
 BOLT_X = 52.0
 ANCHOR_DEG = (75, 90, 105, -75, -90, -105)
@@ -20,11 +20,13 @@ POST = 40.0
 POST_GAP = 0.6
 COLLAR_WALL = 6.0
 COLLAR_H = 42.0
-CABLE_Y = 101.0
-CABLE_X = 69.6
+CORD = 4.0
+CABLE_Y = 95.0 + (DRUM_Z[0] + DRUM_Z[1]) / 2
+CABLE_X = GROOVE_R + CORD / 2 * math.sqrt(2)
 SHEAVE_R = 22.0
-SHEAVE_PITCH = 18.8
-SHEAVE_W = 10.0
+SHEAVE_APEX = 16.5
+SHEAVE_PITCH = SHEAVE_APEX + CORD / 2 * math.sqrt(2)
+SHEAVE_W = 12.0
 AXLE_Z = 13.0
 
 
@@ -66,8 +68,8 @@ def drum():
         body -= box(x - 3.6, x + 3.6, -21.5, -17.5, zc - 4.2, z1 + 1)
     for deg in ANCHOR_DEG:
         a = math.radians(deg)
-        hole = cyl_x(1.3, 46, FLANGE_R + 1, 0, zc, 24)
-        pocket = box(47, 58, -3.2, 3.2, zc - 3.2, z1 + 1)
+        hole = cyl_x(2.4, 46, FLANGE_R + 1, 0, zc, 24)
+        pocket = box(47, 59, -4.6, 4.6, zc - 4.6, z1 + 1)
         tool = (hole + pocket).rotate([0, 0, deg])
         body -= tool
     split = (SQUARE_Y[0] + SQUARE_Y[1]) / 2
@@ -78,7 +80,8 @@ def drum():
 
 def sheave(bore=11.05):
     body = cyl(SHEAVE_R, 0, SHEAVE_W)
-    groove = Manifold.revolve(CrossSection([[(SHEAVE_PITCH - 1.0, SHEAVE_W / 2), (SHEAVE_R + 1, SHEAVE_W / 2 - 4.0), (SHEAVE_R + 1, SHEAVE_W / 2 + 4.0)]]), SEG)
+    reach = SHEAVE_R + 1 - SHEAVE_APEX
+    groove = Manifold.revolve(CrossSection([[(SHEAVE_APEX, SHEAVE_W / 2), (SHEAVE_R + 1, SHEAVE_W / 2 - reach), (SHEAVE_R + 1, SHEAVE_W / 2 + reach)]]), SEG)
     body -= groove
     body -= cyl(bore, -1, SHEAVE_W + 1)
     return body
