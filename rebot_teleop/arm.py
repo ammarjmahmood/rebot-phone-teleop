@@ -31,6 +31,9 @@ def min_jerk(start, goal, speed, accel, dt):
     return out
 
 
+NO_GRIPPER_ALERT = "Gripper motor 7 is not answering. This arm is running without its gripper. After fixing the cable, press Power on to pick it up"
+
+
 class Arm:
     def __init__(self, name, channel, gravity=None, controller_factory=None):
         self.name = name
@@ -44,6 +47,7 @@ class Arm:
         self.motors = []
         self.connected = False
         self.torque = False
+        self.has_gripper = True
         self.answering = []
         self.codes = [None] * 7
         self.code_logged = 0.0
@@ -117,7 +121,8 @@ class Arm:
         if answering != self.answering:
             self._log(f"motors answering {answering}")
         self.answering = answering
-        if len(answering) < len(C.MOTORS):
+        no_gripper = answering == [m for m, _ in C.MOTORS[:6]]
+        if len(answering) < len(C.MOTORS) and not no_gripper:
             self._shut(controller, motors)
             missing = [m for m, _ in C.MOTORS if m not in answering]
             if not answering:
@@ -125,9 +130,17 @@ class Arm:
             else:
                 self.note = "Motors " + ", ".join(map(str, missing)) + f" do not answer on {self.channel}; check the cable after motor {min(missing) - 1}"
             return False
+        if no_gripper:
+            self._log("running without the gripper")
+            try:
+                motors[6].close()
+            except Exception:
+                pass
+            motors = motors[:6]
         with self.lock:
             self.controller = controller
             self.motors = motors
+            self.has_gripper = not no_gripper
             self.connected = True
             self.note = None
             self.fault = None
@@ -170,7 +183,9 @@ class Arm:
             values = [motor.robstride_get_param_f32(POSITION_PARAM, 300) for motor in self.motors]
             if not all(math.isfinite(v) for v in values):
                 raise ValueError("Position feedback is not finite")
-            self.measured = np.array(values, dtype=float) + self.offset
+            measured = self.measured.copy()
+            measured[:len(values)] = np.array(values, dtype=float) + self.offset[:len(values)]
+            self.measured = measured
             self.feedback_at = time.monotonic()
             return self.measured.copy()
 
@@ -195,6 +210,8 @@ class Arm:
                     pass
 
     def enable(self):
+        if self.connected and not self.torque and not self.has_gripper:
+            self.close()
         if not self.connected and not self.connect():
             raise ValueError(self.note or f"{self.name} arm is not reachable")
         if self.torque:
@@ -445,6 +462,8 @@ class Arm:
     def grip(self, width):
         with self.lock:
             self._check()
+            if not self.has_gripper:
+                return
             goal = self.width_to_angle(width)
             if abs(goal - self.target[6]) > GRIPPER_HOLD_LEAD:
                 self.gripper_stalled = False
@@ -484,6 +503,7 @@ class Arm:
             return {
                 "name": self.name, "channel": self.channel, "connected": self.connected, "powered": self.torque,
                 "motors_answering": list(self.answering), "fault": self.fault, "cooling": self.cooling, "note": self.note,
+                "alert": NO_GRIPPER_ALERT if self.connected and not self.has_gripper else None,
                 "joints_deg": [round(math.degrees(v), 2) for v in self.measured[:6]],
                 "command_deg": [round(math.degrees(v), 2) for v in self.command[:6]],
                 "velocity_deg_s": [round(math.degrees(v), 1) for v in self.velocity[:6]],

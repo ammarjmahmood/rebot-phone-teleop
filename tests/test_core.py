@@ -220,3 +220,27 @@ def test_failed_connect_closes_every_motor():
     assert not arm.connect()
     assert made[0].closed
     assert len(made[0].motors) == 7 and all(m.closed for m in made[0].motors)
+
+
+def test_arm_runs_without_its_gripper_and_picks_it_up_again(robot):
+    unit = robot.units["left"]
+    bus = robot.factory.buses[unit.arm.channel]
+    bus.dead = {7}
+    unit.arm.close()
+    assert wait_until(lambda: unit.arm.connected and not unit.arm.has_gripper)
+    status = robot.status()["arms"]["left"]
+    assert status["motors_answering"] == [1, 2, 3, 4, 5, 6]
+    assert "gripper" in status["alert"]
+    assert robot.power_on("left")["powered"] == ["left"]
+    assert unit.arm.torque
+    before = unit.arm.q.copy()
+    goal = before.copy()
+    goal[3] += math.radians(5)
+    duration = unit.arm.move(goal, 45.0)
+    assert wait_until(lambda: abs(unit.arm.q[3] - goal[3]) < math.radians(1), timeout=duration + 3)
+    unit.arm.grip(0.0)
+    bus.dead = set()
+    robot.power_off("left")
+    assert robot.power_on("left")["powered"] == ["left"]
+    assert unit.arm.has_gripper
+    assert robot.status()["arms"]["left"]["alert"] is None

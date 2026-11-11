@@ -61,6 +61,7 @@ function pills() {
     const cls = a.fault ? 'bad' : a.powered ? 'ok' : a.connected ? 'blue' : 'warn';
     const text = a.cooling ? 'over temperature, cooling at home' : a.fault ? 'fault' : a.powered ? 'powered' : a.connected ? 'connected, torque off' : 'offline';
     out.push(el('span', { class: 'pill ' + cls, title: a.note || '' }, `${name}: ${text}`));
+    if (a.alert) out.push(el('span', { class: 'pill warn', title: a.alert }, `${name}: no gripper`));
   }
   const t = state.teleop;
   if (t.active) out.push(el('span', { class: 'pill blue' }, `teleop ${t.source || ''} ${t.input_hz} Hz`));
@@ -100,7 +101,7 @@ function renderArms() {
     const pill = $(`pill-${name}`);
     pill.className = 'pill ' + (a.fault ? 'bad' : a.powered ? 'ok' : a.connected ? 'blue' : 'warn');
     pill.textContent = a.cooling ? 'over temperature' : a.fault ? 'fault' : a.powered ? `powered ${a.loop_hz} Hz` : a.connected ? 'torque off, hand guide' : 'offline';
-    $(`note-${name}`).textContent = [a.fault, a.note, a.warm].filter(Boolean).join('. ');
+    $(`note-${name}`).textContent = [a.alert, a.fault, a.note, a.warm].filter(Boolean).join('. ');
     $(`note-${name}`).className = a.fault ? 'fault' : 'note';
     for (let i = 0; i < 6; i++) {
       const [lo, hi] = a.limits_deg[i];
