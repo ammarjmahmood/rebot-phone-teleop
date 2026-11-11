@@ -44,16 +44,20 @@ Settings on every plate: Bambu PETG Basic, 0.24 mm layers, 4 walls, 25% gyroid, 
 | Item | Qty | Where | Cost (CAD) |
 |---|---|---|---|
 | [Everbilt 550 paracord, 50 ft](https://www.homedepot.ca/product/everbilt-diamond-braid-rope-550-paracord-medium-duty/1001927620), rated 110 lb | 1 | Home Depot SKU 1001927620, back of aisle 12 at Leaside | price in store only, about $10 |
-| [Paulin M5-0.8 x 20 mm hex cap screw](https://www.homedepot.ca/product/paulin-m5-80-x-20mm-class-8-8-metric-hex-cap-screw-din-933-zinc-plated/1000128425) + M5 hex nut | 8 each | SKU 1000128425, aisle 16 bay 015 at Leaside | $0.47 each, about $6 with nuts |
-| [Paulin M8-1.25 x 40 mm hex cap screw](https://www.homedepot.ca/product/paulin-m8-1-25-x-40mm-class-8-8-metric-hex-cap-screw-din-931-partial-thread-zinc-plated/1000135048), M8 nylon lock nut, 2 M8 washers | 2 sets | SKU 1000135048, aisle 16 bay 015 at Leaside | $1.17 each, about $4 with nuts and washers |
-| Paulin M4-0.7 screw, 40 to 50 mm long, + M4 hex nut | 4 each | same Paulin drawers, aisle 16 | about $3 |
+| [Paulin M5-0.8 x 20 mm hex cap screw](https://www.homedepot.ca/product/paulin-m5-80-x-20mm-class-8-8-metric-hex-cap-screw-din-933-zinc-plated/1000128425) | 8 | SKU 1000128425, aisle 16 bay 015 | $0.47 each |
+| [Paulin M5-0.8 hex nut](https://www.homedepot.ca/product/paulin-m5-0-80-class-8-metric-hex-nut-din-934-zinc-plated/1000128517) | 8 | SKU 1000128517, aisle 16 bay 015 | $0.21 each |
+| [Paulin M8-1.25 x 40 mm hex cap screw](https://www.homedepot.ca/product/paulin-m8-1-25-x-40mm-class-8-8-metric-hex-cap-screw-din-931-partial-thread-zinc-plated/1000135048) | 2 | SKU 1000135048, aisle 16 bay 015 | $1.17 each |
+| [Paulin M8-1.25 nylon insert lock nut](https://www.homedepot.ca/product/paulin-m8-1-25-metric-pozi-lok-nylon-insert-stop-nut-zinc-plated/1000128541) | 2 | SKU 1000128541, aisle 16 bay 015 | $0.66 each |
+| [Paulin M8 flat washer](https://www.homedepot.ca/product/paulin-m8-metric-flat-washers-zinc-plated-iso-7089/1000128557) | 4 | SKU 1000128557, aisle 16 bay 015 | $0.22 each |
+| [Paulin M4-0.7 x 40 pan head machine screw, 6 pack](https://www.homedepot.ca/product/paulin-pan-square-machine-screw-m4-70-x-40-6pcs/1001588013) | 1 pack | SKU 1001588013, aisle 16 bay 009 | $4.48 |
+| [Paulin M4-0.7 hex nut](https://www.homedepot.ca/product/paulin-m4-0-70-class-8-metric-hex-nut-din-934-zinc-plated/1000128515) | 4 | SKU 1000128515, aisle 16 bay 015 | $0.19 each |
 | [Everbilt carabiner clip set](https://www.homedepot.ca/product/everbilt-eb-link-hook-carabiner-clip-set/1001846154) | 1 | SKU 1001846154 | $4.98 |
 | Weight, 6.8 kg per arm | 2 | see below | $0 to $76 |
 | PETG for the three plates | 422 g | your spool | about $11 |
 
 Weight options per arm, cheapest first: two 4 L jugs with 3.4 L of water each (free, and you tune by pouring); three bricks in a bag; a [10 lb cast iron plate](https://www.canadiantire.ca/en/pdp/wa-ke-athletic-1-in-cast-iron-weight-plate-single-assorted-weights-1842013p.html) ($24.99 at Canadian Tire) plus a 5 lb one.
 
-Total with water jugs: about $27 of hardware plus about $11 of filament. With cast iron plates (5 lb plate estimated at $13): about $103 plus filament.
+Stock and aisles are from Home Depot Leaside (101 Wicksteed Ave, near Laird and Eglinton) on 2026-11-11. Total with water jugs: $20.20 of screws, nuts and carabiners plus the paracord (about $10, priced in store), so about $30 before tax, plus about $11 of filament. With cast iron plates (5 lb plate estimated at $13): about $106 plus filament.
 
 Spring version instead of weights, both arms: 2 extension springs of about 0.62 N/mm (3.5 lbf/in) that can stretch 190 mm, 2 [Everbilt eye and hook turnbuckles](https://homedepot.ca/product/everbilt-5-1-2-inch-zinc-eye-hook-turnbuckle/1000769521), 2 [Everbilt 1/4 x 2 in eye bolts](https://homedepot.ca/product/everbilt-1-4-inch-x-2-inch-eye-bolt-with-hex-nut-zinc-1-pc-/1000769927), and 8 more M5 screws and nuts.
 
