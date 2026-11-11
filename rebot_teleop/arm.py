@@ -48,6 +48,7 @@ class Arm:
         self.connected = False
         self.torque = False
         self.has_gripper = True
+        self.spare = None
         self.answering = []
         self.codes = [None] * 7
         self.code_logged = 0.0
@@ -132,14 +133,10 @@ class Arm:
             return False
         if no_gripper:
             self._log("running without the gripper")
-            try:
-                motors[6].close()
-            except Exception:
-                pass
-            motors = motors[:6]
         with self.lock:
             self.controller = controller
-            self.motors = motors
+            self.motors = motors[:6] if no_gripper else motors
+            self.spare = motors[6] if no_gripper else None
             self.has_gripper = not no_gripper
             self.connected = True
             self.note = None
@@ -158,6 +155,13 @@ class Arm:
             self.note = f"Could not read the joints on {self.channel}: {error}"
             return False
         return True
+
+    def _gripper_back(self):
+        try:
+            device, _ = self.spare.robstride_ping_host_id(C.HOST_ID, 150)
+            return device == C.MOTORS[6][0]
+        except Exception:
+            return False
 
     def _wrap_offsets(self, raw):
         offsets = np.zeros(7)
@@ -210,7 +214,8 @@ class Arm:
                     pass
 
     def enable(self):
-        if self.connected and not self.torque and not self.has_gripper:
+        if self.connected and not self.torque and not self.has_gripper and self._gripper_back():
+            self._log("the gripper motor answers again")
             self.close()
         if not self.connected and not self.connect():
             raise ValueError(self.note or f"{self.name} arm is not reachable")
@@ -271,6 +276,9 @@ class Arm:
         with self.lock:
             controller, self.controller = self.controller, None
             motors, self.motors = self.motors, []
+            if self.spare is not None:
+                motors.append(self.spare)
+                self.spare = None
             self.connected = False
         if controller is not None:
             try:

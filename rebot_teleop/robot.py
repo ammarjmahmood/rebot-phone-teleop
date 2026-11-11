@@ -152,6 +152,7 @@ class Robot:
                 unit.power_on()
                 done.append(unit.name)
             except Exception as error:
+                unit.arm._log(f"power on failed: {error}")
                 notes.append(f"{unit.name}: {error}")
         if not done and notes:
             raise ValueError("; ".join(notes))
