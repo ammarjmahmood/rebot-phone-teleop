@@ -38,8 +38,8 @@ def main():
     lan, tailnet = addresses()
     cert, key = ensure_certificate(C.DATA / "tls", lan + tailnet)
     configs = [
-        uvicorn.Config(app, host=host, port=args.port, access_log=False, ws_ping_interval=5, ws_ping_timeout=10),
-        uvicorn.Config(app, host=host, port=args.https_port, access_log=False, lifespan="off", ssl_certfile=str(cert), ssl_keyfile=str(key), ws_ping_interval=5, ws_ping_timeout=10),
+        uvicorn.Config(app, host=host, port=args.port, access_log=False, timeout_graceful_shutdown=2, ws_ping_interval=5, ws_ping_timeout=10),
+        uvicorn.Config(app, host=host, port=args.https_port, access_log=False, timeout_graceful_shutdown=2, lifespan="off", ssl_certfile=str(cert), ssl_keyfile=str(key), ws_ping_interval=5, ws_ping_timeout=10),
     ]
     print(f"reBot dashboard http://127.0.0.1:{args.port}/  Quest https://{(lan + tailnet + ['127.0.0.1'])[0]}:{args.https_port}/quest" + ("  (simulated arms)" if args.sim else ""), flush=True)
 

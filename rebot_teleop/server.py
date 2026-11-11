@@ -160,6 +160,7 @@ def create_app(sim=False, arms=("left", "right"), start_hardware=True):
         data = await body(request)
         if data.get("on", True):
             return await asyncio.to_thread(robot.power_on, data.get("arm"))
+        print(f"Torque off for {data.get('arm') or 'both arms'} requested by {request.client.host if request.client else 'unknown'}", flush=True)
         teleop.release_all()
         return await asyncio.to_thread(robot.power_off, data.get("arm"))
 

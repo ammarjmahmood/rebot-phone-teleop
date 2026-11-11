@@ -69,7 +69,7 @@ def test_move_tip_is_smooth_and_reaches(robot):
 
 def test_out_of_reach_goes_as_close_as_possible(robot):
     unit = robot.units["left"]
-    q, err, _ = unit.kin.ik(np.array([0.3, -0.5, 0.8]), np.eye(3), unit.arm.q, iterations=80)
+    q, err, _ = unit.kin.ik(np.array([0.3, -0.9, 0.8]), np.eye(3), unit.arm.q, iterations=80)
     assert err > 0.05
     assert np.all(q >= unit.kin.lower - 1e-9) and np.all(q <= unit.kin.upper + 1e-9)
 
