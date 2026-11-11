@@ -43,6 +43,7 @@ function showTab(tab) {
 $('stop').onclick = () => act('/api/stop', {}, 'Holding');
 document.addEventListener('keydown', e => { if (e.code === 'Space' && !['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) { e.preventDefault(); act('/api/stop', {}, 'Holding'); } });
 $('power-all').onclick = () => act('/api/power', { on: true }).then(r => toast('Powered: ' + (r.powered.join(', ') || 'none') + (r.notes.length ? '. ' + r.notes.join('; ') : ''), r.notes.length === 0));
+for (const arm of ['left', 'right']) $('power-' + arm).onclick = () => act('/api/power', { arm, on: true }, arm + ' arm holding');
 $('off-all').onclick = () => { if (confirm('Turn torque off on both arms? They will drop under gravity, so hold them.')) act('/api/power', { on: false }, 'Torque off'); };
 $('clear').onclick = () => act('/api/clear', {}, 'Cleared');
 $('save-pose').onclick = () => { const name = prompt('Pose name'); if (name) act('/api/pose/save', { name }, 'Saved ' + name).then(loadPoses); };
@@ -145,14 +146,14 @@ function cameraList() {
   return CAMERA_ORDER.filter(n => names.includes(n)).concat(names.filter(n => !CAMERA_ORDER.includes(n)));
 }
 function renderCameras() {
-  const targets = { home: 'cams-home', policy: 'cams-policy' };
-  for (const [tab, id] of Object.entries(targets)) {
+  const targets = [['home', 'cams-home', n => n === 'head'], ['home', 'cams-wrists', n => n !== 'head'], ['policy', 'cams-policy', () => true]];
+  for (const [tab, id, wanted] of targets) {
     const box = $(id);
     const live = state.tab === tab && !state.camsPaused;
-    const names = cameraList();
+    const names = cameraList().filter(wanted);
     if (box.dataset.names !== names.join() + live) {
       box.dataset.names = names.join() + live;
-      box.replaceChildren(...(names.length ? names.map((n, i) => el('div', { class: 'cam' + (i === 0 ? ' big' : '') }, el('img', { src: live ? `/api/camera/${n}.mjpg` : '', alt: '' }), el('span', {}, n))) : [el('div', { class: 'muted' }, 'No cameras configured')]));
+      box.replaceChildren(...(names.length ? names.map((n, i) => el('div', { class: 'cam' + (i === 0 && id !== 'cams-wrists' ? ' big' : '') }, el('img', { src: live ? `/api/camera/${n}.mjpg` : '', alt: '' }), el('span', {}, n))) : [el('div', { class: 'muted' }, 'No cameras configured')]));
     }
   }
   const tele = $('tele-cam');

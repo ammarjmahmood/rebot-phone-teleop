@@ -81,6 +81,14 @@ class Arm:
                 return True
             return self._connect()
 
+    def _shut(self, controller, motors):
+        for motor in motors:
+            try:
+                motor.close()
+            except Exception:
+                pass
+        controller.close()
+
     def _connect(self):
         controller = self._open()
         motors, answering = [], []
@@ -96,13 +104,13 @@ class Arm:
                 except Exception:
                     pass
         except Exception as error:
-            controller.close()
+            self._shut(controller, motors)
             self.answering = []
             self.note = f"CAN {self.channel}: {error}"
             return False
         self.answering = answering
         if len(answering) < len(C.MOTORS):
-            controller.close()
+            self._shut(controller, motors)
             missing = [m for m, _ in C.MOTORS if m not in answering]
             if not answering:
                 self.note = f"No motors answer on {self.channel}; is the arm power on?"
@@ -231,11 +239,11 @@ class Arm:
         self.disable()
         with self.lock:
             controller, self.controller = self.controller, None
-            self.motors = []
+            motors, self.motors = self.motors, []
             self.connected = False
         if controller is not None:
             try:
-                controller.close()
+                self._shut(controller, motors)
             except Exception:
                 pass
 

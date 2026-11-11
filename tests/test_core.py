@@ -184,3 +184,39 @@ def test_reaches_below_its_base_across_the_body(robot):
     goal = np.array([0.35, -0.2, 0.6])
     best = min(kin.ik(goal, rotation, np.radians(seed), iterations=200)[1] for seed in ([-60, 200, 60, 0, 0, 0], [-30, 190, 80, 0, 0, 0], C.POSES_DEG["ready"]["left"]))
     assert best < 0.01
+
+
+def test_failed_connect_closes_every_motor():
+    from rebot_teleop.arm import Arm
+
+    class Motor:
+        closed = False
+
+        def robstride_ping_host_id(self, *args):
+            raise TimeoutError
+
+        def close(self):
+            self.closed = True
+
+    class Controller:
+        def __init__(self):
+            self.motors = []
+            self.closed = False
+
+        def add_robstride_motor(self, *args):
+            self.motors.append(Motor())
+            return self.motors[-1]
+
+        def close(self):
+            self.closed = True
+
+    made = []
+
+    def factory(channel):
+        made.append(Controller())
+        return made[-1]
+
+    arm = Arm("left", "can1", controller_factory=factory)
+    assert not arm.connect()
+    assert made[0].closed
+    assert len(made[0].motors) == 7 and all(m.closed for m in made[0].motors)

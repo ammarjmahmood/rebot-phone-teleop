@@ -48,6 +48,8 @@ main{padding:12px}
 .cams .cam span{position:absolute;left:6px;top:4px;font-size:11px;background:#000a;padding:1px 6px;border-radius:6px}
 .cams.small{grid-template-columns:1fr 1fr 1fr}
 .cams.small .cam.big{grid-column:auto}
+.cams.wrists{margin-top:8px}
+.cams.wrists .cam{max-height:260px}
 .bigcam{background:#000;border-radius:10px;overflow:hidden;aspect-ratio:4/3;max-height:62vh;display:flex;justify-content:center}
 .bigcam img{height:100%;max-width:100%;object-fit:contain}
 .arms .panel h3{margin:0}
