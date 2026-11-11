@@ -1,6 +1,7 @@
 import math
 import threading
 import time
+import traceback
 import numpy as np
 from rebot_teleop import config as C
 
@@ -44,6 +45,8 @@ class Arm:
         self.connected = False
         self.torque = False
         self.answering = []
+        self.codes = [None] * 7
+        self.code_logged = 0.0
         self.offset = np.zeros(7)
         self.measured = np.zeros(7)
         self.velocity = np.zeros(7)
@@ -81,6 +84,9 @@ class Arm:
                 return True
             return self._connect()
 
+    def _log(self, text):
+        print(f"{time.strftime('%H:%M:%S')} {self.name} arm: {text}", flush=True)
+
     def _shut(self, controller, motors):
         for motor in motors:
             try:
@@ -108,6 +114,8 @@ class Arm:
             self.answering = []
             self.note = f"CAN {self.channel}: {error}"
             return False
+        if answering != self.answering:
+            self._log(f"motors answering {answering}")
         self.answering = answering
         if len(answering) < len(C.MOTORS):
             self._shut(controller, motors)
@@ -216,11 +224,15 @@ class Arm:
             self.controller.enable_all()
             self.torque = True
             self.feedback_at = time.monotonic()
+        self._log("torque on")
         self.running.set()
         self.thread = threading.Thread(target=self._loop, name=f"arm-{self.name}", daemon=True)
         self.thread.start()
 
     def disable(self):
+        if self.torque:
+            callers = " < ".join(f.name for f in reversed(traceback.extract_stack(limit=7)[:-1]))
+            self._log(f"torque off, called from {callers}; fault {self.fault}; note {self.note}")
         self.running.clear()
         if self.thread and self.thread is not threading.current_thread():
             self.thread.join(timeout=1.0)
@@ -236,6 +248,8 @@ class Arm:
             self.rate = np.zeros(7)
 
     def close(self):
+        if self.connected:
+            self._log(f"closing the CAN connection; note {self.note}")
         self.disable()
         with self.lock:
             controller, self.controller = self.controller, None
@@ -263,7 +277,10 @@ class Arm:
                 with self.lock:
                     self._feedback(ticks % 100 == 0)
             except Exception as error:
-                self.note = f"CAN error on {self.channel}: {error}"
+                message = f"CAN error on {self.channel}: {error}"
+                if self.note != message:
+                    self._log(message)
+                self.note = message
                 time.sleep(0.05)
             ticks += 1
             now = time.perf_counter()
@@ -323,6 +340,12 @@ class Arm:
             if state is None or not math.isfinite(state.pos):
                 continue
             fresh = True
+            code = getattr(state, "status_code", None)
+            if code != self.codes[index]:
+                self.codes[index] = code
+                if now - self.code_logged > 0.25:
+                    self.code_logged = now
+                    self._log(f"motor {index + 1} status code {code}")
             self.measured[index] = state.pos + self.offset[index]
             self.velocity[index] = state.vel if math.isfinite(state.vel) else 0.0
             self.effort[index] = state.torq if math.isfinite(state.torq) else 0.0
@@ -331,8 +354,11 @@ class Arm:
         if fresh:
             self.feedback_at = now
             if self.note and self.note.startswith("No feedback"):
+                self._log("feedback is back")
                 self.note = None
         elif now - self.feedback_at > C.FEEDBACK_TIMEOUT_S:
+            if not (self.note and self.note.startswith("No feedback")):
+                self._log("no feedback from any motor")
             self.note = f"No feedback from the {self.name} arm for {now - self.feedback_at:.1f} s; check its power and CAN cable"
         if temperatures:
             self._watch_temperature()
