@@ -53,7 +53,7 @@ Settings on every plate: Bambu PETG Basic, 0.24 mm layers, 4 walls, 25% gyroid, 
 
 Weight options per arm, cheapest first: two 4 L jugs with 3.4 L of water each (free, and you tune by pouring); three bricks in a bag; a [10 lb cast iron plate](https://www.canadiantire.ca/en/pdp/wa-ke-athletic-1-in-cast-iron-weight-plate-single-assorted-weights-1842013p.html) ($24.99 at Canadian Tire) plus a 5 lb one.
 
-Total with water jugs: about $38 plus filament. With cast iron plates: about $110.
+Total with water jugs: about $27 of hardware plus about $11 of filament. With cast iron plates (5 lb plate estimated at $13): about $103 plus filament.
 
 Spring version instead of weights, both arms: 2 extension springs of about 0.62 N/mm (3.5 lbf/in) that can stretch 190 mm, 2 [Everbilt eye and hook turnbuckles](https://homedepot.ca/product/everbilt-5-1-2-inch-zinc-eye-hook-turnbuckle/1000769521), 2 [Everbilt 1/4 x 2 in eye bolts](https://homedepot.ca/product/everbilt-1-4-inch-x-2-inch-eye-bolt-with-hex-nut-zinc-1-pc-/1000769927), and 8 more M5 screws and nuts.
 
