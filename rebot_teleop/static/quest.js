@@ -13,6 +13,7 @@ function connect() {
     if (m.type !== 'status' && m.type !== 'started') return;
     lastStatus = m.arms || lastStatus;
     lastTeleop = m.teleop || lastTeleop;
+    showView();
     if (m.heavy !== undefined) lastHeavy = !!m.heavy;
     hudDirty = true;
     budgetAlerts(m.arms || {});
@@ -73,9 +74,10 @@ function drawHud() {
   x.fillStyle = 'rgba(16,18,22,0.82)';
   x.fillRect(0, 0, c.width, c.height);
   const names = Object.keys(lastStatus).sort();
-  const rowH = c.height / Math.max(names.length, 1);
+  const top = 36;
+  const rowH = (c.height - top) / Math.max(names.length, 1);
   names.forEach((name, i) => {
-    const a = lastStatus[name], y = i * rowH, level = budgetLevel(a);
+    const a = lastStatus[name], y = top + i * rowH, level = budgetLevel(a);
     const color = level === 'rest' ? '#ef5350' : level === 'warm' ? '#ffb300' : '#43a047';
     const pct = a.heat ? Math.min(a.heat.pct, 100) : 0;
     x.fillStyle = '#e8eaed';
@@ -91,12 +93,34 @@ function drawHud() {
     x.font = '26px sans-serif';
     x.fillText(budgetText(a, name), bx + bw + 14, y + rowH / 2);
   });
-  if (lastHeavy) { x.fillStyle = '#ffb300'; x.font = 'bold 20px sans-serif'; x.textBaseline = 'top'; x.fillText('HEAVY POSES ON', c.width - 200, 6); }
+  x.font = 'bold 20px sans-serif';
+  x.textBaseline = 'top';
+  x.textAlign = 'right';
+  x.fillStyle = '#9fb4c8';
+  x.fillText('you stand ' + VIEW_NAMES[currentView()] + ' (Y)', c.width - 10, 8);
+  if (lastHeavy) { x.textAlign = 'left'; x.fillStyle = '#ffb300'; x.fillText('HEAVY POSES ON', 16, 8); }
+  x.textAlign = 'left';
   const gl2 = gl;
   gl2.bindTexture(gl2.TEXTURE_2D, hud.texture);
   gl2.texImage2D(gl2.TEXTURE_2D, 0, gl2.RGBA, gl2.RGBA, gl2.UNSIGNED_BYTE, c);
   hudDirty = false;
 }
+
+const VIEW_NAMES = { behind: 'behind the robot', front: 'facing the robot', left: 'at its left', right: 'at its right' };
+
+function currentView() { return (lastTeleop.settings && lastTeleop.settings.view) || 'behind'; }
+
+function setView(view) {
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'settings', settings: { view } }));
+  lastTeleop.settings = { ...(lastTeleop.settings || {}), view };
+  hudDirty = true;
+  showView();
+  status(`You stand ${VIEW_NAMES[view]}. Squeeze grip again to use it.`);
+}
+
+function showView() { document.querySelectorAll('button.view').forEach(b => b.classList.toggle('on', b.dataset.view === currentView())); }
+
+document.querySelectorAll('button.view').forEach(b => b.onclick = () => setView(b.dataset.view));
 
 function setFeed() { $('feed').src = `/api/camera/${CAMERAS[cameraIndex]}.mjpg?vr=${Date.now()}`; }
 
@@ -129,8 +153,8 @@ function makePanel(gl) {
   const shared = makeProgram(gl);
   const canvas = document.createElement('canvas');
   canvas.width = 640;
-  canvas.height = 150;
-  hud = makeQuad(gl, shared, 0.32, 0.075);
+  canvas.height = 190;
+  hud = makeQuad(gl, shared, 0.32, 0.095);
   hud.canvas = canvas;
   return makeQuad(gl, shared, 0.32, 0.24);
 }
@@ -211,6 +235,7 @@ function onFrame(time, frame) {
     if (hand === 'right' && buttons.stick && !prev.stick) panelOn = !panelOn;
     if (hand === 'right' && buttons.b && !prev.b) { cameraIndex = (cameraIndex + 1) % CAMERAS.length; setFeed(); }
     if (hand === 'left' && buttons.stick && !prev.stick && viewer) placePanel(viewer);
+    if (hand === 'left' && buttons.y && !prev.y) { setView(currentView() === 'front' ? 'behind' : 'front'); pulse(pad, 0.5, 60); }
     lastButtons[hand] = buttons;
     const engaged = grip > 0.5;
     if (engaged && !gripWas[hand]) {

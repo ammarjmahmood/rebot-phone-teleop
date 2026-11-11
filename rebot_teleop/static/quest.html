@@ -14,6 +14,7 @@ button.alt{background:#2a2f38;color:#e6e8eb;font-size:18px;padding:12px 22px}
 #arms span{display:inline-block;margin:4px;padding:4px 12px;border-radius:999px;background:#2a2f38;font-size:15px}
 #arms span.ok{background:#9fd04a;color:#0c1205}
 #arms span.warn{background:#f2b33d;color:#1a1203}
+button.view.on{background:#5aa9ff;color:#0c1205}
 .help{color:#8b93a0;font-size:15px;text-align:left}
 img#feed{position:absolute;width:2px;height:2px;opacity:0;pointer-events:none}
 </style>
@@ -26,9 +27,10 @@ img#feed{position:absolute;width:2px;height:2px;opacity:0;pointer-events:none}
   <div id="link"></div>
   <button id="enter">Enter VR</button>
   <button id="exit" class="alt" hidden>Exit VR</button>
+  <div><button class="alt view" data-view="behind">I stand behind the robot</button><button class="alt view" data-view="front">I face the robot</button></div>
   <div class="help">
     <p>Squeeze <b>grip</b> to move that arm, let go to hold. <b>Trigger</b> closes the gripper. Each arm starts from where it is; one arm works if the other is off.</p>
-    <p><b>Right stick click</b> shows or hides the camera panel, <b>B</b> switches camera. Hold <b>X</b> and push the <b>left stick</b> up or down to move the table.</p>
+    <p><b>Right stick click</b> shows or hides the camera panel, <b>B</b> switches camera. Hold <b>X</b> and push the <b>left stick</b> up or down to move the table. <b>Y</b> switches between standing behind the robot and facing it; it applies from your next grip squeeze.</p>
   </div>
 </main>
 <img id="feed" alt="" crossorigin="anonymous">
