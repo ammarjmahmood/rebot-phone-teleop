@@ -44,9 +44,9 @@ function budgetCore(a) {
   if (!a.connected) return 'offline';
   if (a.rest) {
     const r = a.rest;
-    if (r.phase === 'returning') return 'going back up';
-    if (r.phase === 'recovering') return r.comes_back ? `relaxing, back up in ${r.eta_s} s` : `relaxing ${r.eta_s} s`;
-    return 'relaxing';
+    if (r.phase === 'returning') return 'going back';
+    if (r.phase === 'recovering') return r.comes_back ? `resting, back in ${r.eta_s} s` : 'cannot pull in further, bring it in';
+    return 'pulling in';
   }
   if (a.fault) return 'FAULT';
   if (!a.ready) return 'torque off';

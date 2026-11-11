@@ -6,7 +6,7 @@ import numpy as np
 from rebot_teleop import config as C
 from rebot_teleop.arm import Arm, LOWER, UPPER, min_jerk
 from rebot_teleop import heat as H
-from rebot_teleop.kin import Kinematics, rest_pose, top_down
+from rebot_teleop.kin import Kinematics, top_down
 
 NET = Path("/sys/class/net")
 
@@ -50,10 +50,9 @@ class Unit:
         self.channel = C.DEFAULT_CAN.get(name, "can0")
         self.arm = Arm(name, self.channel, gravity=self.kin.gravity_function(), controller_factory=factory, motors=settings.get("motors"))
         self.arm.home_q = np.radians(C.POSES_DEG["home"][name])
+        self.arm.relief = self.relief_path
         self.load_lock = threading.Lock()
         self.load_gravity = self.kin.gravity_function()
-        if self.counterbalance:
-            self.arm.home_q = rest_pose(self.kin, self.arm.home_q)
         if self.counterbalance and self.counterbalance.get("j2_min_deg") is not None:
             floor = math.radians(float(self.counterbalance["j2_min_deg"]))
             self.arm.lower[1] = max(self.arm.lower[1], floor)
@@ -125,6 +124,23 @@ class Unit:
 
     def power_off(self):
         self.arm.disable()
+
+    def relief_path(self, q_now):
+        tip, rotation = self.kin.pose(q_now)
+        table = self.robot.table
+        height = tip[2] if table.get("front") is None else max(tip[2], float(table["top"]) + C.RELIEF_ABOVE_TABLE)
+        target = np.array([min(tip[0], C.RELIEF_X), tip[1], height])
+        if np.linalg.norm(target - tip) < 0.01:
+            return None
+        path = [np.asarray(q_now, dtype=float)]
+        seed = path[0]
+        for step in np.linspace(0.0, 1.0, 17)[1:]:
+            q, err, _ = self.kin.ik(tip + (target - tip) * step, rotation, seed, iterations=30)
+            if err > 0.02:
+                break
+            path.append(q)
+            seed = q
+        return np.array(path) if len(path) > 1 else None
 
     def table_hit(self, goal):
         table = self.robot.table

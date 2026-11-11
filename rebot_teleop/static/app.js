@@ -68,9 +68,9 @@ function budgetLevel(a) {
 function budgetText(a) {
   if (a.rest) {
     const r = a.rest;
-    if (r.phase === 'returning') return 'recovered, going back up';
-    if (r.phase === 'recovering') return `relaxing at home, ${r.comes_back ? 'back up' : 'ready'} in about ${r.eta_s} s`;
-    return 'relaxing at home';
+    if (r.phase === 'returning') return 'recovered, going back';
+    if (r.phase === 'recovering') return r.comes_back ? `resting, back in about ${r.eta_s} s` : 'cannot pull in further from here; bring the hand in or down';
+    return 'pulling the hand in until the load is light';
   }
   const h = a.heat;
   if (!h) return a.powered ? 'motor budget full' : '';
@@ -82,7 +82,7 @@ function pills() {
   const out = [];
   for (const [name, a] of Object.entries(state.arms)) {
     const cls = a.fault ? 'bad' : a.powered ? 'ok' : a.connected ? 'blue' : 'warn';
-    const text = a.cooling ? 'over temperature, cooling at home' : a.resting ? 'relaxing to recover' : a.fault ? 'fault' : a.powered ? 'powered' : a.connected ? 'connected, torque off' : 'offline';
+    const text = a.cooling ? 'over temperature, cooling at home' : a.resting ? 'pulling in' : a.fault ? 'fault' : a.powered ? 'powered' : a.connected ? 'connected, torque off' : 'offline';
     out.push(el('span', { class: 'pill ' + cls, title: a.note || '' }, `${name}: ${text}`));
     for (const tag of a.alert_tags || []) out.push(el('span', { class: 'pill warn', title: a.alert || '' }, `${name}: ${tag}`));
   }
@@ -198,7 +198,7 @@ function renderArms() {
     armCard(name);
     const pill = $(`pill-${name}`);
     pill.className = 'pill ' + (a.fault ? 'bad' : a.powered ? 'ok' : a.connected ? 'blue' : 'warn');
-    pill.textContent = a.cooling ? 'over temperature' : a.resting ? 'relaxing to recover' : a.fault ? 'fault' : a.powered ? `powered ${a.loop_hz} Hz` : a.connected ? 'torque off, hand guide' : 'offline';
+    pill.textContent = a.cooling ? 'over temperature' : a.resting ? 'pulling in' : a.fault ? 'fault' : a.powered ? `powered ${a.loop_hz} Hz` : a.connected ? 'torque off, hand guide' : 'offline';
     $(`note-${name}`).textContent = [a.alert, a.fault, a.note, a.warm].filter(Boolean).join('. ');
     $(`note-${name}`).className = a.fault ? 'fault' : 'note';
     for (let i = 0; i < 6; i++) {

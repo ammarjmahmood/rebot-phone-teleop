@@ -56,6 +56,8 @@ class Arm:
         self.heat = H.Budget(self.models)
         self.heat_at = 0.0
         self.on_event = None
+        self.relief = None
+        self.quick2 = np.zeros(6)
         self.lower = LOWER.copy()
         self.upper = UPPER.copy()
         self.channel = channel
@@ -263,8 +265,8 @@ class Arm:
             self.rest_return = None
             self.rest_reason = what
             if not self.cooling:
-                self.fault = f"{what}. It was caught and the arm is relaxing at home. Press Power on to carry on"
-            self._go_home()
+                self.fault = f"{what}. It was caught and the arm is pulling the hand in. Press Power on to carry on"
+            self._relieve()
         self._log(f"caught motor {index + 1}; relaxing at home")
 
     def _still_nm(self, index):
@@ -274,6 +276,7 @@ class Arm:
         now = time.monotonic()
         self.heat_at = now
         self.heat.step(np.abs(self.effort[:6]), np.degrees(np.abs(self.velocity[:6])), dt)
+        self.quick2 += (self.effort[:6] ** 2 - self.quick2) * min(dt / 0.3, 1.0)
         if self.resting:
             self._rest_step(now)
             return
@@ -283,7 +286,7 @@ class Arm:
         if over:
             worst = max(over, key=lambda i: self.heat.used[i])
             self._log(f"joint {worst + 1} used up its budget holding {abs(self.effort[worst]):.1f} Nm; relaxing at home; {self._pose_text()}")
-            self._start_rest(f"Joint {worst + 1} used up what it can hold", C.COOL_HOME_DEG_S)
+            self._start_rest(f"Joint {worst + 1} used up what it can hold", C.COOL_HOME_DEG_S, come_back=C.REST_COMES_BACK)
 
     def _start_rest(self, reason, speed_deg_s, resume=None, come_back=True):
         self.rests += 1
@@ -292,9 +295,9 @@ class Arm:
         self.rest_phase = "lowering"
         self.rest_reason = reason
         self.rest_resume = C.HEAT_RESUME if resume is None else resume
-        self.rest_return = self.command[:6].copy() if come_back and C.REST_COMES_BACK else None
+        self.rest_return = self.command[:6].copy() if come_back else None
         self._rest_fault()
-        self._go_home(speed_deg_s)
+        self._relieve(speed_deg_s)
 
     def _rest_eta(self):
         return max(0.0, float(np.max(self.heat.used)) - self.rest_resume) * C.HEAT_COOL_S
@@ -304,30 +307,42 @@ class Arm:
             return
         if self.faulted:
             return
-        back = "then it goes back up" if self.rest_return is not None else "then it holds there"
         if self.rest_phase == "lowering":
-            self.fault = f"{self.rest_reason}, so the arm is relaxing at home; {back}"
+            self.fault = f"{self.rest_reason}, so the arm is pulling the hand in until every joint can hold its load"
+        elif self.rest_phase == "recovering" and self.rest_return is not None:
+            self.fault = f"{self.rest_reason}. Resting here for about {self._rest_eta():.0f} s, then it goes back"
         elif self.rest_phase == "recovering":
-            self.fault = f"{self.rest_reason}. Relaxing for about {self._rest_eta():.0f} s, {back}"
+            self.fault = f"{self.rest_reason}. It cannot pull in further from here; bring it in or down, or support it"
         elif self.rest_phase == "returning":
-            self.fault = f"{self.rest_reason}. Recovered, going back up"
+            self.fault = f"{self.rest_reason}. Recovered, going back"
+
+    def _holdable(self, fraction=None):
+        fraction = C.HEAT_HOLD_MARGIN if fraction is None else fraction
+        return bool(np.all(np.sqrt(self.quick2) <= fraction * self.continuous))
 
     def _rest_step(self, now):
         if self.faulted:
             return
-        if self.rest_phase == "lowering" and self.trajectory is None:
-            self.rest_phase = "recovering"
-            self._log("relaxed at home; waiting for the motors to recover")
-        if self.rest_phase == "recovering" and self.trajectory is None and any(u >= self.heat.limit and r > 0 for u, r in zip(self.heat.used, self.heat.rates)):
-            self.rest_phase = "lowering"
-            self._go_home()
-        if self.rest_phase == "recovering" and float(np.max(self.heat.used)) <= self.rest_resume:
-            if self.rest_return is not None:
+        if self.rest_phase == "lowering":
+            if self.trajectory is not None and self._holdable(C.RELIEF_STOP_FRACTION) and now - self.rest_at > C.REST_SETTLE_S:
+                self.trajectory = None
+                self.target[:6] = self.command[:6]
+                self.rate = np.zeros(7)
+                self._log(f"pulled in far enough for the motors to recover; {self._pose_text()}")
+            if self.trajectory is None:
+                self.rest_phase = "recovering"
+                if self.rest_return is None and self._holdable():
+                    self._finish_rest("in range; carry on while the motors recover")
+                    return
+        if self.rest_phase == "recovering":
+            recovered = float(np.max(self.heat.used)) <= self.rest_resume
+            if self.rest_return is None and (recovered or self._holdable()):
+                self._finish_rest("light enough now; carry on")
+                return
+            if self.rest_return is not None and recovered:
                 self.rest_phase = "returning"
-                self._log("recovered; going back up")
+                self._log("recovered; going back")
                 self._plan(self.rest_return, C.REST_RETURN_DEG_S)
-            else:
-                self._finish_rest("recovered; holding at home")
         elif self.rest_phase == "returning" and self.trajectory is None:
             self._finish_rest("back where it was; ready again")
         self._rest_fault()
@@ -509,6 +524,7 @@ class Arm:
             if self.heat_at:
                 self.heat.cool(time.monotonic() - self.heat_at)
             self.heat_at = time.monotonic()
+            self.quick2 = np.zeros(6)
             self.resting = False
             self.catches = []
             self.gripper_stalled = False
@@ -703,23 +719,37 @@ class Arm:
         if hot and not self.cooling:
             joint, t = max(hot, key=lambda h: h[1])
             self.cooling = True
-            self.fault = f"Over temperature: joint {joint} at {t:.0f} C. Going home to cool; usable again below {C.COOLED_C:.0f} C"
-            self._go_home()
+            self.fault = f"Over temperature: joint {joint} at {t:.0f} C. Pulling the hand in to cool; usable again below {C.COOLED_C:.0f} C"
+            self._relieve()
         elif self.cooling:
             peak = max((t for _, t in known), default=0.0)
             if peak < C.COOLED_C:
                 self.cooling = False
                 self.fault = None
             elif self.trajectory is None:
-                self.fault = f"Over temperature: resting at home, {peak:.0f} C now, usable again below {C.COOLED_C:.0f} C"
+                self.fault = f"Over temperature: resting, {peak:.0f} C now, usable again below {C.COOLED_C:.0f} C"
 
-    def _go_home(self, speed_deg_s=None):
+    def _relieve(self, speed_deg_s=None):
         self.rate[:] = 0.0
-        if self.home_q is None or not self.torque:
+        path = None
+        if self.relief is not None and self.torque:
+            try:
+                path = self.relief(self.command[:6].copy())
+            except Exception as error:
+                self._log(f"could not plan a pull in: {error}")
+        if path is None or len(path) < 2:
             self.trajectory = None
             self.target = self.command.copy()
-            return
-        self._plan(self.home_q, speed_deg_s or C.COOL_HOME_DEG_S)
+            return False
+        speed = math.radians(speed_deg_s or C.COOL_HOME_DEG_S)
+        points = np.clip(np.asarray(path, dtype=float)[:, :6], self.lower, self.upper)
+        times = [0.0]
+        for a, b in zip(points[:-1], points[1:]):
+            times.append(times[-1] + max(0.02, float(np.max(np.abs(b - a))) / speed))
+        self.trajectory = (np.array(times), points)
+        self.trajectory_start = time.monotonic()
+        self.target[:6] = points[-1]
+        return True
 
     def _plan(self, goal, speed_deg_s):
         goal = np.clip(np.asarray(goal, dtype=float)[:6], self.lower, self.upper)

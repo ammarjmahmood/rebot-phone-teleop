@@ -12,7 +12,7 @@ The arms hang off the side of the post, so joint 1 holds the whole arm up whenev
 | hanging weight, 15 lb (6.8 kg) | about 3 Nm | about 10% | about 4.6 Nm |
 | spring, 0.62 N/mm | 4.3 Nm | about 15 to 18% | 0.1 Nm |
 
-Holding a 0.8 kg jar reached out over a plate (the task in the test video), joint 1 goes from 18.6 Nm, which trips in about 13 s, to 14.0 Nm with 15 lb (about 54 s) or 12.6 Nm with 20 lb (about 98 s). A heavier weight helps more on loaded tasks; the software moves the arm's resting pose forward to where the weight and the arm balance (16 degrees forward for 15 lb, 22 degrees for 20 lb), so resting still costs nothing. Start with 15 lb and go to 20 lb (9 kg, `constant_nm` 6.0) if the motor report shows joint 1 still running out.
+Holding a 0.8 kg jar reached out over a plate (the task in the test video), joint 1 goes from 18.6 Nm, which trips in about 13 s, to 14.0 Nm with 15 lb (about 54 s) or 12.6 Nm with 20 lb (about 98 s). A heavier weight helps more on loaded tasks; the cost is that hanging at home then holds the weight's torque (4.7 Nm for 15 lb, 6.1 Nm for 20 lb), which is still under the 8 Nm joint 1 holds for long. Start with 15 lb and go to 20 lb (9 kg, `constant_nm` 6.0) if the motor report shows joint 1 still running out.
 
 All from the arm model, not measured yet. The weight wins: it pulls the same at every angle, which happens to match how the arm is used, it needs no spring hunting, and you tune it by adding or removing plates. Its costs: joint 1 holds about 4.6 Nm at home instead of nothing (still under its 8 Nm), and when an arm is powered off the weight swings it back about 25 degrees until gravity balances it, so support the arm before Power off.
 
