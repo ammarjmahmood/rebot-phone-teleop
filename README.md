@@ -10,6 +10,7 @@ Everything for the two armed reBot (two Seeed B601 RS arms on a post) in plain P
 * **Quest VR** at `https://<jetson>:8443/quest`: squeeze grip to move that arm, trigger closes the gripper. Works with one arm or both. The link is also kept on the GitHub gist bookmark.
 * **Phone** at `https://<jetson>:8443/phone`: touch sticks drive the gripper tip.
 * **Motor budget**: every joint tracks how much of its RobStride overload allowance it has used. The Home tab shows it per joint, the Teleop tab and the Quest headset show the time left, and an arm that runs out relaxes at home, recovers and goes back up by itself. The Sequencer rests the arms before steps that would run out. See `docs/ROBOT_GUIDE.md`.
+* **Joint 1 counterbalance**: printable drum, pulley and spring parts that carry part of the shoulder load, with a shopping list and a per arm setting so the software knows. See `hardware/counterbalance/README.md`.
 * **Teleop recording**: the Record teleop button on the Teleop tab saves a folder in `~/.rebot-teleop/recordings/`: `states.jsonl` (both arms at 50 Hz), one `.mjpg` and `.times.txt` per camera, and `meta.json`. It is not a rosbag, since there is no ROS here.
 * **Claude Code**: the `rebot` MCP server is registered for every `claude` session on the Jetson (code as policy).
 

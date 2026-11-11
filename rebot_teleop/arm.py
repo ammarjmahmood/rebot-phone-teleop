@@ -46,10 +46,17 @@ NO_GRIPPER_ALERT = "Gripper motor 7 is not answering. This arm is running withou
 class Arm:
     def __init__(self, name, channel, gravity=None, controller_factory=None, motors=None):
         self.name = name
-        self.models = H.motor_models(motors)
+        self.motor_list = H.motor_list(motors)
+        self.models = [model for _, model in self.motor_list[:6]]
+        self.peak = np.array([C.PEAK_NM[model] for _, model in self.motor_list])
+        self.rated = np.array([C.RATED_NM[model] for _, model in self.motor_list])
+        self.push_lead = C.PUSH_FRACTION * self.peak[:6] / KP
+        self.hold_lead = self.rated[:6] / KP
         self.continuous = np.array([H.continuous(m) for m in self.models])
         self.heat = H.Budget(self.models)
         self.heat_at = 0.0
+        self.lower = LOWER.copy()
+        self.upper = UPPER.copy()
         self.channel = channel
         self.gravity = gravity
         self.gravity_scale = 1.0
@@ -133,10 +140,10 @@ class Arm:
         controller = self._open()
         motors, answering = [], []
         try:
-            for mid, model in C.MOTORS:
+            for mid, model in self.motor_list:
                 motor = controller.add_robstride_motor(mid, C.HOST_ID, model)
                 motors.append(motor)
-            for (mid, _), motor in zip(C.MOTORS, motors):
+            for (mid, _), motor in zip(self.motor_list, motors):
                 try:
                     device, _ = motor.robstride_ping_host_id(C.HOST_ID, 150)
                     if device == mid:
@@ -151,10 +158,10 @@ class Arm:
         if answering != self.answering:
             self._log(f"motors answering {answering}")
         self.answering = answering
-        no_gripper = answering == [m for m, _ in C.MOTORS[:6]]
-        if len(answering) < len(C.MOTORS) and not no_gripper:
+        no_gripper = answering == [m for m, _ in self.motor_list[:6]]
+        if len(answering) < len(self.motor_list) and not no_gripper:
             self._shut(controller, motors)
-            missing = [m for m, _ in C.MOTORS if m not in answering]
+            missing = [m for m, _ in self.motor_list if m not in answering]
             if not answering:
                 self.note = f"No motors answer on {self.channel}; is the arm power on?"
             else:
@@ -224,13 +231,13 @@ class Arm:
             self.trajectory = None
             self.rate = np.zeros(7)
             self.command[:6] = self.measured[:6]
-            self.target[:6] = np.clip(self.measured[:6], LOWER, UPPER)
+            self.target[:6] = np.clip(self.measured[:6], self.lower, self.upper)
         time.sleep(0.03)
         with self.lock:
             if not self.torque or index >= len(self.motors):
                 return
             self.command[:6] = self.measured[:6]
-            self.target[:6] = np.clip(self.measured[:6], LOWER, UPPER)
+            self.target[:6] = np.clip(self.measured[:6], self.lower, self.upper)
         time.sleep(0.01)
         with self.lock:
             if not self.torque or index >= len(self.motors):
@@ -252,7 +259,7 @@ class Arm:
         self._log(f"caught motor {index + 1}; relaxing at home")
 
     def _still_nm(self, index):
-        return float(self.continuous[index]) if index < 6 else float(RATED[index])
+        return float(self.continuous[index]) if index < 6 else float(self.rated[index])
 
     def _watch_load(self, dt):
         now = time.monotonic()
@@ -360,7 +367,7 @@ class Arm:
                 except Exception as error:
                     self._log(f"motor {index + 1} would not clear its fault: {error}")
             self.command[:len(self.motors)] = self.measured[:len(self.motors)]
-            self.target[:6] = np.clip(self.measured[:6], LOWER, UPPER)
+            self.target[:6] = np.clip(self.measured[:6], self.lower, self.upper)
             self.rate = np.zeros(7)
             self.trajectory = None
         time.sleep(0.05)
@@ -396,7 +403,7 @@ class Arm:
     def _gripper_back(self):
         try:
             device, _ = self.spare.robstride_ping_host_id(C.HOST_ID, 150)
-            return device == C.MOTORS[6][0]
+            return device == self.motor_list[6][0]
         except Exception:
             return False
 
@@ -441,7 +448,7 @@ class Arm:
             return self.measured.copy()
 
     def _raise_torque_limits(self):
-        for index, ((_, model), motor) in enumerate(zip(C.MOTORS, self.motors)):
+        for index, ((_, model), motor) in enumerate(zip(self.motor_list, self.motors)):
             limit = self.torque_limits[index]
             if limit is not None and limit < C.PEAK_NM[model] - 0.05:
                 try:
@@ -479,7 +486,7 @@ class Arm:
             self._raise_torque_limits()
             self.command = q.copy()
             self.target = q.copy()
-            self.target[:6] = np.clip(q[:6], LOWER, UPPER)
+            self.target[:6] = np.clip(q[:6], self.lower, self.upper)
             self.rate = np.zeros(7)
             self.trajectory = None
             if not self.cooling:
@@ -549,7 +556,7 @@ class Arm:
                     self._advance(time.monotonic())
                     if self.gravity is not None and self.gravity_scale:
                         torque = np.nan_to_num(np.asarray(self.gravity(self.measured[:6]), dtype=float)) * self.gravity_scale
-                        self.tau[:6] = np.clip(torque, -np.array(C.GRAVITY_LIMIT_NM), C.GRAVITY_LIMIT_NM)
+                        self.tau[:6] = np.clip(torque, -self.peak[:6], self.peak[:6])
                     frames = [(m, float(p - o), float(r), kp, kd, float(t)) for m, p, o, r, t, (kp, kd) in zip(self.motors, self.command, self.offset, self.rate, self.tau, C.GAINS)]
                 for motor, position, rate, kp, kd, tau in frames:
                     motor.send_mit(position, rate, kp, kd, tau)
@@ -616,7 +623,7 @@ class Arm:
         if not self.feedback_at:
             return
         lead = self.command[:6] - self.measured[:6]
-        limit = np.where(self.blocked, HOLD_LEAD, PUSH_LEAD)
+        limit = np.where(self.blocked, self.hold_lead, self.push_lead)
         over = np.abs(lead) > limit
         if over.any():
             self.command[:6] = np.where(over, self.measured[:6] + np.sign(lead) * limit, self.command[:6])
@@ -627,7 +634,7 @@ class Arm:
         if newly.any():
             self.blocked |= newly
             self._log("joint " + ", ".join(str(i + 1) for i in np.flatnonzero(newly)) + " is blocked; easing off to a force it can hold")
-        freed = self.blocked & (np.abs(self.target[:6] - self.measured[:6]) <= HOLD_LEAD)
+        freed = self.blocked & (np.abs(self.target[:6] - self.measured[:6]) <= self.hold_lead)
         if freed.any():
             self.blocked &= ~freed
             self._log("joint " + ", ".join(str(i + 1) for i in np.flatnonzero(freed)) + " is free again")
@@ -635,7 +642,7 @@ class Arm:
     def torque_history(self):
         with self.lock:
             rows = list(self.history)
-        return {"t": [t for t, _ in rows], "nm": [values for _, values in rows], "rated": self.continuous.tolist(), "peak": PEAK[:6].tolist()}
+        return {"t": [t for t, _ in rows], "nm": [values for _, values in rows], "rated": self.continuous.tolist(), "peak": self.peak[:6].tolist()}
 
     def _feedback(self, temperatures):
         now = time.monotonic()
@@ -705,7 +712,7 @@ class Arm:
         self._plan(self.home_q, speed_deg_s or C.COOL_HOME_DEG_S)
 
     def _plan(self, goal, speed_deg_s):
-        goal = np.clip(np.asarray(goal, dtype=float)[:6], LOWER, UPPER)
+        goal = np.clip(np.asarray(goal, dtype=float)[:6], self.lower, self.upper)
         self.rate[:] = 0.0
         samples = min_jerk(self.command[:6], goal, math.radians(speed_deg_s), math.radians(speed_deg_s * 6), 0.01)
         self.trajectory = (np.array([t for t, _ in samples]), np.array([q for _, q in samples]))
@@ -730,7 +737,7 @@ class Arm:
             raise ValueError(self.fault)
 
     def servo(self, q):
-        q = np.clip(np.asarray(q, dtype=float)[:6], LOWER, UPPER)
+        q = np.clip(np.asarray(q, dtype=float)[:6], self.lower, self.upper)
         with self.lock:
             self._check()
             if self.trajectory is not None:
@@ -740,7 +747,7 @@ class Arm:
     def play(self, samples):
         self._check()
         times = np.array([t for t, _ in samples], dtype=float)
-        points = np.clip(np.array([q for _, q in samples], dtype=float)[:, :6], LOWER, UPPER)
+        points = np.clip(np.array([q for _, q in samples], dtype=float)[:, :6], self.lower, self.upper)
         with self.lock:
             self.rate[:6] = 0.0
             self.trajectory = (times, points)
@@ -750,7 +757,7 @@ class Arm:
 
     def move(self, q, speed_deg_s=C.MOVE_DEG_S, accel_deg_s2=C.MOVE_DEG_S2):
         start = self.command[:6].copy() if self.torque else self.measured[:6].copy()
-        goal = np.clip(np.asarray(q, dtype=float)[:6], LOWER, UPPER)
+        goal = np.clip(np.asarray(q, dtype=float)[:6], self.lower, self.upper)
         samples = min_jerk(start, goal, math.radians(speed_deg_s), math.radians(accel_deg_s2), 0.01)
         return self.play(samples)
 
@@ -816,7 +823,7 @@ class Arm:
                 "motors_answering": list(self.answering), "fault": self.fault, "cooling": self.cooling, "note": self.note,
                 "alert": self._alert(), "alert_tags": self._alert_tags(), "has_gripper": self.has_gripper, "resting": self.resting,
                 "heat": self.heat.summary() if self.torque else None, "rest": self.rest_status(), "motors": list(self.models),
-                "load_nm": [round(float(v), 1) for v in np.sqrt(self.load2[:6])], "rated_nm": RATED[:6].tolist(), "hold_nm": self.continuous.tolist(),
+                "load_nm": [round(float(v), 1) for v in np.sqrt(self.load2[:6])], "rated_nm": self.rated[:6].tolist(), "hold_nm": self.continuous.tolist(),
                 "joints_deg": [round(math.degrees(v), 2) for v in self.measured[:6]],
                 "command_deg": [round(math.degrees(v), 2) for v in self.command[:6]],
                 "velocity_deg_s": [round(math.degrees(v), 1) for v in self.velocity[:6]],

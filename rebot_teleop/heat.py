@@ -8,6 +8,10 @@ TABLES = {
         "still": ((8.0, INF), (11.0, 200.0), (17.0, 15.0), (20.0, 11.0), (25.0, 5.0), (30.0, 1.0), (36.0, 1.0)),
         "moving": ((11.0, INF), (17.0, 200.0), (20.0, 36.0), (25.0, 18.0), (30.0, 8.0), (36.0, 4.0)),
     },
+    "rs-03": {
+        "still": ((15.0, INF), (20.0, 30.0), (30.0, 7.0), (40.0, 1.5), (60.0, 1.5)),
+        "moving": ((20.0, INF), (30.0, 189.0), (40.0, 26.0), (50.0, 12.0), (60.0, 7.0)),
+    },
     "rs-00": {
         "still": ((5.0, INF), (6.0, 74.0), (7.0, 43.0), (8.0, 16.0), (9.0, 9.0), (10.0, 5.0), (11.0, 3.0), (12.0, 2.0), (13.0, 1.5), (14.0, 1.5)),
         "moving": ((5.0, INF), (6.0, 280.0), (7.0, 120.0), (8.0, 55.0), (9.0, 22.0), (10.0, 18.0), (11.0, 12.0), (12.0, 10.0), (13.0, 6.0), (14.0, 5.0)),
@@ -89,10 +93,14 @@ class Budget:
         }
 
 
-def motor_models(overrides=None):
-    models = [model for _, model in C.MOTORS[:6]]
+def motor_list(overrides=None):
+    motors = list(C.MOTORS)
     for key, model in (overrides or {}).items():
         index = int(key) - 1
-        if 0 <= index < 6 and model in TABLES:
-            models[index] = model
-    return models
+        if 0 <= index < 6 and model in TABLES and model in C.PEAK_NM:
+            motors[index] = (motors[index][0], model)
+    return motors
+
+
+def motor_models(overrides=None):
+    return [model for _, model in motor_list(overrides)[:6]]

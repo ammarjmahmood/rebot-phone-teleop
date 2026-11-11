@@ -461,3 +461,29 @@ def test_hold_here_holds_a_hand_placed_arm_where_it_is():
         assert sorted(data["holding"]) == ["left", "right"]
         time.sleep(0.5)
         assert unit.arm.torque and np.max(np.abs(np.degrees(unit.arm.q) - placed)) < 0.5
+
+
+def test_counterbalance_setting_lightens_joint_1_and_guards_the_drum():
+    settings = {"counterbalance": {"nm_per_rad": 3.0, "zero_deg": 90.0, "forward": -1, "max_deg": 170, "j2_min_deg": -20}}
+    C.save("arms/right/settings.json", settings)
+    try:
+        r = Robot(sim=True)
+        unit = r.units["right"]
+        ready = np.radians(C.POSES_DEG["ready"]["right"])
+        assisted = unit.kin.gravity_function()(ready)[0]
+        assert assisted == pytest.approx(-7.53 + 3.0 * math.radians(90 - 28.5), abs=0.1)
+        assert abs(unit.kin.gravity_function()(np.radians(C.POSES_DEG["home"]["right"]))[0]) < 0.3
+        assert unit.arm.lower[1] == pytest.approx(math.radians(-20)) and unit.kin.lower[1] == pytest.approx(math.radians(-20))
+        assert r.units["left"].arm.lower[1] == pytest.approx(math.radians(C.LIMITS_DEG[1][0]))
+    finally:
+        (C.DATA / "arms/right/settings.json").unlink()
+
+
+def test_joint_1_can_be_an_rs03():
+    from rebot_teleop.arm import Arm
+    from rebot_teleop import heat as H
+    arm = Arm("x", "can9", motors={"1": "rs-03"})
+    assert arm.models[0] == "rs-03" and arm.motor_list[0] == (1, "rs-03") and arm.motor_list[1] == (2, "rs-06")
+    assert arm.continuous[0] == 15.0 and arm.peak[0] == 60.0
+    assert H.seconds_at(H.TABLES["rs-03"]["still"], 20.0) == pytest.approx(30.0)
+    assert H.heat_rate("rs-03", 12.0, 0) < 0

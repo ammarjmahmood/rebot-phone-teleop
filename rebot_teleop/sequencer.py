@@ -5,7 +5,7 @@ import threading
 import time
 import numpy as np
 from rebot_teleop import config as C
-from rebot_teleop.arm import LOWER, UPPER, min_jerk
+from rebot_teleop.arm import min_jerk
 
 FOLDER = C.DATA / "sequences"
 PLAN_DT = 0.1
@@ -208,7 +208,8 @@ class Sequencer:
         if kind == "pose":
             for name, joints in step.get("arms", {}).items():
                 if name in current:
-                    goal = np.clip(np.radians(joints), LOWER, UPPER)
+                    arm = self.robot.units[name].arm
+                    goal = np.clip(np.radians(joints), arm.lower, arm.upper)
                     paths[name] = [q for _, q in min_jerk(current[name], goal, math.radians(float(step.get("speed_deg_s", C.MOVE_DEG_S)) * speed), math.radians(C.MOVE_DEG_S2 * speed), PLAN_DT)]
             hold = float(step.get("pause_s", 0.0)) / speed
         elif kind == "gripper":
@@ -223,7 +224,8 @@ class Sequencer:
             for name, rows in step["arms"].items():
                 if name not in current:
                     continue
-                joints = np.clip(np.radians(smooth(np.asarray(rows, dtype=float))[:, :6]), LOWER, UPPER)
+                arm = self.robot.units[name].arm
+                joints = np.clip(np.radians(smooth(np.asarray(rows, dtype=float))[:, :6]), arm.lower, arm.upper)
                 approach = [q for _, q in min_jerk(current[name], joints[0], math.radians(40.0 * min(speed, 2.0)), math.radians(C.MOVE_DEG_S2), PLAN_DT)]
                 grid = np.arange(0.0, t[-1] + PLAN_DT, PLAN_DT)
                 played = [np.array([np.interp(g, t, joints[:, j]) for j in range(6)]) for g in grid]

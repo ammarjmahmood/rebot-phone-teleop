@@ -43,11 +43,16 @@ class Unit:
         self.robot = robot
         settings = C.load(f"arms/{name}/settings.json", {})
         self.mount = settings.get("mount") or C.MOUNTS.get(name) or {"xyz": [0, 0, 0], "rpy_deg": [0, 0, 0]}
-        self.kin = Kinematics(self.mount)
+        self.counterbalance = settings.get("counterbalance")
+        self.kin = Kinematics(self.mount, counterbalance=self.counterbalance)
         self.factory = factory
         self.channel = C.DEFAULT_CAN.get(name, "can0")
         self.arm = Arm(name, self.channel, gravity=self.kin.gravity_function(), controller_factory=factory, motors=settings.get("motors"))
         self.arm.home_q = np.radians(C.POSES_DEG["home"][name])
+        if self.counterbalance and self.counterbalance.get("j2_min_deg") is not None:
+            floor = math.radians(float(self.counterbalance["j2_min_deg"]))
+            self.arm.lower[1] = max(self.arm.lower[1], floor)
+            self.kin.lower[1] = max(self.kin.lower[1], floor)
         gripper = settings.get("gripper_range")
         if gripper:
             try:
@@ -107,8 +112,8 @@ class Unit:
     def status(self):
         s = self.arm.status()
         tip, rot = self.kin.pose(self.arm.q)
-        s.update({"tip_xyz": [round(float(v), 4) for v in tip], "tip_rotation": np.round(rot, 4).tolist(), "mount": self.mount, "note": s["note"] or self.note, "ready": self.ready})
-        s["limits_deg"] = [list(p) for p in C.LIMITS_DEG]
+        s.update({"tip_xyz": [round(float(v), 4) for v in tip], "tip_rotation": np.round(rot, 4).tolist(), "mount": self.mount, "note": s["note"] or self.note, "ready": self.ready, "counterbalance": self.counterbalance})
+        s["limits_deg"] = [[round(math.degrees(lo), 1), round(math.degrees(hi), 1)] for lo, hi in zip(self.arm.lower, self.arm.upper)]
         s["seeed_limits_deg"] = [list(p) for p in C.SEEED_LIMITS_DEG]
         return s
 

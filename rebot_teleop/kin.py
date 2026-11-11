@@ -37,8 +37,9 @@ def visuals(urdf=C.URDF):
 
 
 class Kinematics:
-    def __init__(self, mount=None, urdf=C.URDF):
+    def __init__(self, mount=None, urdf=C.URDF, counterbalance=None):
         self.model = pin.buildModelFromUrdf(str(urdf))
+        self.counterbalance = counterbalance or None
         self.mount = placement(**mount) if mount else pin.SE3.Identity()
         root = self.model.getJointId("joint1")
         self.model.jointPlacements[root] = self.mount * self.model.jointPlacements[root]
@@ -131,12 +132,24 @@ class Kinematics:
         data = model.createData()
         indices = list(self.indices)
 
+        counter = self.counterbalance
+
         def gravity(q):
             full = pin.neutral(model)
             full[indices] = np.asarray(q, dtype=float)[:6]
-            return pin.computeGeneralizedGravity(model, data, full)[indices].copy()
+            torque = pin.computeGeneralizedGravity(model, data, full)[indices].copy()
+            if counter:
+                torque[0] -= assist(counter, q[0])
+            return torque
 
         return gravity
+
+
+def assist(counter, q1):
+    forward = float(counter.get("forward", 1.0))
+    swing = forward * (float(q1) - math.radians(float(counter.get("zero_deg", 0.0))))
+    swing = min(max(swing, 0.0), math.radians(float(counter.get("max_deg", 170.0))))
+    return forward * float(counter.get("nm_per_rad", 0.0)) * swing
 
 
 def top_down(yaw_deg=0.0):
