@@ -6,11 +6,12 @@ import time
 from contextlib import asynccontextmanager
 import numpy as np
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from rebot_teleop import config as C
 from rebot_teleop import links, twin
 from rebot_teleop.recorder import Recorder
+from rebot_teleop.motorlog import MotorLog, report_text
 from rebot_teleop.usb_link import QuestUsb
 from rebot_teleop.cameras import Cameras
 from rebot_teleop.kin import top_down
@@ -77,6 +78,7 @@ def create_app(sim=False, arms=("left", "right"), start_hardware=True):
     gist = links.Gist()
     usb = QuestUsb()
     recorder = Recorder(robot, cameras, teleop)
+    motorlog = MotorLog(robot, mode=lambda: "teleop" if teleop.active else "sequence" if sequencer.playing else "idle")
     cap_runs = {"current": None, "events": [], "seq": 0}
     scene_cache = {}
 
@@ -84,6 +86,7 @@ def create_app(sim=False, arms=("left", "right"), start_hardware=True):
     async def lifespan(app):
         if start_hardware:
             robot.start()
+            motorlog.start()
             cameras.start()
             if not sim:
                 lift.start()
@@ -91,6 +94,7 @@ def create_app(sim=False, arms=("left", "right"), start_hardware=True):
                 usb.start()
         yield
         recorder.stop()
+        motorlog.stop()
         teleop.stop()
         robot.close()
         cameras.close()
@@ -363,6 +367,13 @@ def create_app(sim=False, arms=("left", "right"), start_hardware=True):
     @app.get("/api/torque")
     async def torque():
         return {"now": time.time(), "seconds": C.TORQUE_HISTORY_S, "arms": {name: unit.arm.torque_history() for name, unit in robot.units.items()}}
+
+    @app.get("/api/motorlog/report")
+    async def motorlog_report(hours: float = 24.0, arm: str = None, format: str = "json"):
+        data = await asyncio.to_thread(motorlog.report, hours, arm or None)
+        if format == "text":
+            return PlainTextResponse(report_text(data))
+        return data
 
     @app.post("/api/record/start")
     async def record_start():

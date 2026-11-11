@@ -498,3 +498,29 @@ def test_hanging_weight_counterbalance_is_a_constant_pull():
         assert gravity(np.radians(C.POSES_DEG["home"]["right"]))[0] == pytest.approx(4.1, abs=0.1)
     finally:
         (C.DATA / "arms/right/settings.json").unlink()
+
+
+def test_motor_log_records_poses_events_and_reports_costly_poses(robot, tmp_path):
+    from rebot_teleop.motorlog import MotorLog, report_text
+    log = MotorLog(robot, root=tmp_path, hz=50.0)
+    log.start()
+    try:
+        robot.power_on("right")
+        arm = robot.units["right"].arm
+        far = [1.4, 175.0, 147.1, 13.9, -13.0, -158.1]
+        arm.move(np.radians(far), 90.0)
+        robot.wait(20)
+        time.sleep(2.5)
+        arm.relax("Test rest")
+        time.sleep(0.5)
+    finally:
+        log.stop()
+    report = log.report(hours=1)
+    right = report["arms"]["right"]
+    assert right["powered_min"] > 0 and right["costly_poses"]
+    worst = right["costly_poses"][0]
+    assert abs(worst["j1_mean_nm"]) > 12 and worst["j1_j2_j3_deg"][1] == 180
+    assert any("Test rest" in e["event"] or "relax" in e["event"] for e in report["events"])
+    assert all(len(e["q"]) == 6 for e in report["events"])
+    text = report_text(report)
+    assert "poses that use joint 1's budget most" in text and "right arm" in text

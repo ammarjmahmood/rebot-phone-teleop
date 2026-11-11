@@ -55,6 +55,7 @@ class Arm:
         self.continuous = np.array([H.continuous(m) for m in self.models])
         self.heat = H.Budget(self.models)
         self.heat_at = 0.0
+        self.on_event = None
         self.lower = LOWER.copy()
         self.upper = UPPER.copy()
         self.channel = channel
@@ -127,6 +128,14 @@ class Arm:
 
     def _log(self, text):
         print(f"{time.strftime('%H:%M:%S')} {self.name} arm: {text}", flush=True)
+        if self.on_event is not None:
+            try:
+                self.on_event(self.name, text)
+            except Exception:
+                pass
+
+    def _pose_text(self):
+        return "joints " + " ".join(f"{math.degrees(v):.0f}" for v in self.measured[:6]) + " deg, torque " + " ".join(f"{v:.1f}" for v in self.effort[:6]) + " Nm"
 
     def _shut(self, controller, motors):
         for motor in motors:
@@ -208,7 +217,7 @@ class Arm:
         recent = [values[index] for _, values in list(self.history)[-50:]] if index < 6 else []
         if recent:
             self._log(f"motor {index + 1} torque over the last 5 s: highest {max(recent):.1f} Nm, half second peaks " + " ".join(f"{max(recent[i:i + 5]):.0f}" for i in range(0, len(recent), 5)))
-        self._log(f"{text}; last torque {self.effort[index]:.1f} Nm, position error {error:.1f} deg, joint at {math.degrees(self.measured[index]):.0f} deg")
+        self._log(f"{text}; last torque {self.effort[index]:.1f} Nm, position error {error:.1f} deg; {self._pose_text()}")
         self.faulted.add(index)
         if not self.cooling:
             self.fault = text
@@ -273,7 +282,7 @@ class Arm:
         over = [i for i in range(6) if self.heat.used[i] >= C.HEAT_LOWER and self.heat.rates[i] > 0]
         if over:
             worst = max(over, key=lambda i: self.heat.used[i])
-            self._log(f"joint {worst + 1} used up its budget holding {abs(self.effort[worst]):.1f} Nm; relaxing at home")
+            self._log(f"joint {worst + 1} used up its budget holding {abs(self.effort[worst]):.1f} Nm; relaxing at home; {self._pose_text()}")
             self._start_rest(f"Joint {worst + 1} used up what it can hold", C.COOL_HOME_DEG_S)
 
     def _start_rest(self, reason, speed_deg_s, resume=None, come_back=True):
@@ -336,6 +345,7 @@ class Arm:
             if not self.torque or self.resting:
                 return False
             self._start_rest(reason, speed_deg_s or C.MOVE_DEG_S / 2, resume, come_back)
+        self._log(f"relaxing: {reason}; {self._pose_text()}")
         return True
 
     def rest_status(self):

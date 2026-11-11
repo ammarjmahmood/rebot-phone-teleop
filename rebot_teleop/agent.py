@@ -16,6 +16,7 @@ State
   robot.state()                      dict per arm: joints_deg, tip_xyz, gripper_m, powered, note, budget
   robot.budget(arm)                  motor budget: worst joint, pct used, seconds left before the arm relaxes itself
   robot.wait_ready(arm=None)         waits while an arm relaxes to recover, then returns
+  robot.motor_report(hours=24)       which poses used joint 1's budget most and least, and events with joint angles
 
 Motor budget: the shoulder (joint 1) can hold about 8 Nm while still. Reaching far out uses it up in minutes,
 then the arm relaxes at home, recovers and goes back up by itself. Work fast, keep poses close in or low,
@@ -82,6 +83,9 @@ class Robot:
     def state(self):
         arms = self._call("GET", "/api/status")["arms"]
         return {name: {"joints_deg": a["joints_deg"], "tip_xyz": a["tip_xyz"], "gripper_m": a["gripper_m"], "powered": a["powered"], "connected": a["connected"], "note": a["note"] or a["fault"], "budget": a.get("heat")} for name, a in arms.items()}
+
+    def motor_report(self, hours=24.0):
+        return self._call("GET", f"/api/motorlog/report?hours={hours}")
 
     def budget(self, arm):
         return self._call("GET", "/api/status")["arms"][arm].get("heat")

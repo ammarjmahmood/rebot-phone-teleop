@@ -127,6 +127,14 @@ def plan_sequence(name: str) -> str:
     return guarded(robot()._call, "GET", f"/api/seq/{name}/plan")
 
 
+@server.tool(description="Motor report from the continuous motor log: per arm minutes over each joint's hold limit, torque peaks with the pose, the poses that use joint 1's budget most and least, and relax or fault events with joint angles. hours is how far back to look")
+def motor_report(hours: float = 24.0) -> str:
+    try:
+        return robot()._call("GET", f"/api/motorlog/report?hours={hours}&format=text").decode()
+    except RobotError as error:
+        return f"Error: {error}"
+
+
 @server.tool(description="Play a saved sequence and wait until it finishes")
 def play_sequence(name: str) -> str:
     return guarded(robot().play, name)
