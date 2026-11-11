@@ -44,12 +44,13 @@ class SimMotor:
     def send_mit(self, pos, vel, kp, kd, tau):
         with self.bus.lock:
             self.bus.goal[self.index] = pos
+            self.bus.feedforward[self.index] = tau if self.bus.enabled else 0.0
             self.bus.sent += 1
 
     def get_state(self):
         with self.bus.lock:
             self.bus.step()
-            return SimpleNamespace(pos=float(self.bus.pos[self.index]), vel=float(self.bus.vel[self.index]), torq=float(self.bus.torque.get(self.index, 0.0)), status_code=self.bus.codes.get(self.id, 0), t_mos=self.bus.temperature)
+            return SimpleNamespace(pos=float(self.bus.pos[self.index]), vel=float(self.bus.vel[self.index]), torq=float(self.bus.torque.get(self.index, self.bus.feedforward[self.index])), status_code=self.bus.codes.get(self.id, 0), t_mos=self.bus.temperature)
 
 
 class SimBus:
@@ -64,6 +65,7 @@ class SimBus:
         self.codes = {}
         self.held = set()
         self.torque = {}
+        self.feedforward = np.zeros(7)
         self.at = time.monotonic()
         self.sent = 0
         self.temperature = 34.0
@@ -96,6 +98,7 @@ class SimBus:
     def disable_all(self):
         with self.lock:
             self.enabled = False
+            self.feedforward[:] = 0.0
 
     def close(self):
         pass

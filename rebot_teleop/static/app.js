@@ -302,7 +302,7 @@ function renderTeleop() {
   const lines = [`teleop ${t.active ? 'on (' + t.source + ')' : 'off'}   input ${t.input_hz} Hz   loop ${t.loop_hz} Hz   round trip ${t.latency_ms ?? '?'} ms   frames ${t.frames || 0}, dropped ${t.dropped || 0}`];
   for (const [n, h] of Object.entries(t.hands || {})) {
     const a = state.arms[n] || {};
-    lines.push(`${n.padEnd(6)} ${a.powered ? 'ready' : a.connected ? 'torque off' : 'offline'}  ${h.engaged ? 'MOVING' : 'holding'}  reach error ${h.reach_error_cm} cm  input age ${h.age_ms ?? '-'} ms`);
+    lines.push(`${n.padEnd(6)} ${a.rest ? 'relaxing' : a.ready ? 'ready' : a.powered ? 'fault' : a.connected ? 'torque off' : 'offline'}  ${h.engaged ? 'MOVING' : 'holding'}  reach error ${h.reach_error_cm} cm  input age ${h.age_ms ?? '-'} ms`);
   }
   $('tele-status').textContent = lines.join('\n');
   $('tele-budget').replaceChildren(...Object.entries(state.arms).map(([n, a]) => {
