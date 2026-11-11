@@ -80,7 +80,7 @@ def look_all() -> list:
 
 
 @server.tool(description="Move one arm smoothly. Give one of joints_deg (six angles), tip_xyz (world metres) or tip_delta (metres from now). rotation: empty keeps the hand angle, 'down' points the gripper down, or a yaw in degrees as text for top down at that yaw. gripper_m optional (0 closed to 0.05 open)")
-def move_arm(arm: str, joints_deg: list[float] | None = None, tip_xyz: list[float] | None = None, tip_delta: list[float] | None = None, rotation: str = "", gripper_m: float | None = None, speed_deg_s: float = 45.0) -> str:
+def move_arm(arm: str, joints_deg: list[float] | None = None, tip_xyz: list[float] | None = None, tip_delta: list[float] | None = None, rotation: str = "", gripper_m: float | None = None, speed_deg_s: float = 90.0) -> str:
     rot = None
     if rotation:
         try:
@@ -120,6 +120,11 @@ async def run_policy(code: str, timeout_s: float = 180.0) -> str:
 @server.tool(description="List the motion sequences saved in the dashboard Sequencer tab")
 def list_sequences() -> str:
     return guarded(robot()._call, "GET", "/api/seq")
+
+
+@server.tool(description="Check a saved sequence against the motor budget before playing it: seconds, any rest it needs before a step, and steps that are too heavy")
+def plan_sequence(name: str) -> str:
+    return guarded(robot()._call, "GET", f"/api/seq/{name}/plan")
 
 
 @server.tool(description="Play a saved sequence and wait until it finishes")

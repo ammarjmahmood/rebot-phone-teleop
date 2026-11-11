@@ -5,6 +5,7 @@ import time
 import traceback
 import numpy as np
 from rebot_teleop import config as C
+from rebot_teleop import heat as H
 
 POSITION_PARAM = 0x7019
 TORQUE_LIMIT_PARAM = 0x700B
@@ -43,8 +44,12 @@ NO_GRIPPER_ALERT = "Gripper motor 7 is not answering. This arm is running withou
 
 
 class Arm:
-    def __init__(self, name, channel, gravity=None, controller_factory=None):
+    def __init__(self, name, channel, gravity=None, controller_factory=None, motors=None):
         self.name = name
+        self.models = H.motor_models(motors)
+        self.continuous = np.array([H.continuous(m) for m in self.models])
+        self.heat = H.Budget(self.models)
+        self.heat_at = 0.0
         self.channel = channel
         self.gravity = gravity
         self.gravity_scale = 1.0
@@ -65,8 +70,11 @@ class Arm:
         self.load_at = 0.0
         self.pushing = np.zeros(6)
         self.blocked = np.zeros(6, dtype=bool)
-        self.strain = np.zeros(6)
-        self.quick2 = np.zeros(6)
+        self.rest_phase = None
+        self.rest_return = None
+        self.rest_resume = C.HEAT_RESUME
+        self.rests = 0
+        self.rest_reason = None
         self.rest_at = 0.0
         self.resting = False
         self.catches = []
@@ -188,7 +196,7 @@ class Arm:
         names = ", ".join(name for bit, name in enumerate(STATUS_BITS) if code >> bit & 1) or f"code {code}"
         joint = "Gripper" if index == 6 else f"Joint {index + 1}"
         load = math.sqrt(self.load2[index])
-        text = f"{joint} motor cut out: {names}. It averaged {load:.0f} Nm over the last {LOAD_WINDOW_S:.0f} s and can hold {RATED[index]:.0f} Nm for long. Let the arm hang, then press Power on to reset it"
+        text = f"{joint} motor cut out: {names}. It averaged {load:.0f} Nm over the last {LOAD_WINDOW_S:.0f} s and can hold {self._still_nm(index):.0f} Nm for long when still. Let the arm hang, then press Power on to reset it"
         error = math.degrees(self.command[index] - self.measured[index])
         recent = [values[index] for _, values in list(self.history)[-50:]] if index < 6 else []
         if recent:
@@ -235,40 +243,106 @@ class Arm:
             self.codes[index] = None
             self.resting = True
             self.rest_at = time.monotonic()
+            self.rest_phase = "lowering"
+            self.rest_return = None
+            self.rest_reason = what
             if not self.cooling:
-                self.fault = f"{what}. It was caught and the arm lowers until it can hold the load. Press Power on to carry on"
+                self.fault = f"{what}. It was caught and the arm is relaxing at home. Press Power on to carry on"
             self._go_home()
-        self._log(f"caught motor {index + 1}; lowering until the arm can hold the load")
+        self._log(f"caught motor {index + 1}; relaxing at home")
+
+    def _still_nm(self, index):
+        return float(self.continuous[index]) if index < 6 else float(RATED[index])
 
     def _watch_load(self, dt):
-        self.strain = np.clip(self.strain + ((self.effort[:6] / RATED[:6]) ** 2 - 1.0) * dt, 0.0, 2 * C.OVERLOAD_BUDGET_S)
-        self.quick2 += (self.effort[:6] ** 2 - self.quick2) * min(dt / 0.3, 1.0)
-        worst = int(np.argmax(self.strain))
+        now = time.monotonic()
+        self.heat_at = now
+        self.heat.step(np.abs(self.effort[:6]), np.degrees(np.abs(self.velocity[:6])), dt)
         if self.resting:
-            holdable = bool(np.all(np.sqrt(self.quick2) <= C.REST_FRACTION * RATED[:6]))
-            if self.trajectory is not None and holdable and time.monotonic() - self.rest_at > C.REST_SETTLE_S:
-                self.trajectory = None
-                self.target[:6] = self.command[:6]
-                self.rate = np.zeros(7)
-                self._log("lowered far enough; the arm can hold the load here")
-            if self.trajectory is None and not self.faulted:
-                self.resting = False
-                self.strain = np.minimum(self.strain, 0.7 * C.OVERLOAD_BUDGET_S)
-                if not self.cooling:
-                    self.fault = None
-        elif self.torque and not self.cooling and not self.fault and self.strain[worst] > C.OVERLOAD_BUDGET_S:
-            self.resting = True
-            self.rest_at = time.monotonic()
-            self.fault = f"Joint {worst + 1} held more than it can sustain, so the arm is lowering until it can hold the load"
-            self._log(self.fault)
+            self._rest_step(now)
+            return
+        if not self.torque or self.cooling or self.fault:
+            return
+        over = [i for i in range(6) if self.heat.used[i] >= C.HEAT_LOWER and self.heat.rates[i] > 0]
+        if over:
+            worst = max(over, key=lambda i: self.heat.used[i])
+            self._log(f"joint {worst + 1} used up its budget holding {abs(self.effort[worst]):.1f} Nm; relaxing at home")
+            self._start_rest(f"Joint {worst + 1} used up what it can hold", C.COOL_HOME_DEG_S)
+
+    def _start_rest(self, reason, speed_deg_s, resume=None, come_back=True):
+        self.rests += 1
+        self.resting = True
+        self.rest_at = time.monotonic()
+        self.rest_phase = "lowering"
+        self.rest_reason = reason
+        self.rest_resume = C.HEAT_RESUME if resume is None else resume
+        self.rest_return = self.command[:6].copy() if come_back and C.REST_COMES_BACK else None
+        self._rest_fault()
+        self._go_home(speed_deg_s)
+
+    def _rest_eta(self):
+        return max(0.0, float(np.max(self.heat.used)) - self.rest_resume) * C.HEAT_COOL_S
+
+    def _rest_fault(self):
+        if self.cooling:
+            return
+        if self.faulted:
+            return
+        back = "then it goes back up" if self.rest_return is not None else "then it holds there"
+        if self.rest_phase == "lowering":
+            self.fault = f"{self.rest_reason}, so the arm is relaxing at home; {back}"
+        elif self.rest_phase == "recovering":
+            self.fault = f"{self.rest_reason}. Relaxing for about {self._rest_eta():.0f} s, {back}"
+        elif self.rest_phase == "returning":
+            self.fault = f"{self.rest_reason}. Recovered, going back up"
+
+    def _rest_step(self, now):
+        if self.faulted:
+            return
+        if self.rest_phase == "lowering" and self.trajectory is None:
+            self.rest_phase = "recovering"
+            self._log("relaxed at home; waiting for the motors to recover")
+        if self.rest_phase == "recovering" and self.trajectory is None and any(u >= C.HEAT_LOWER and r > 0 for u, r in zip(self.heat.used, self.heat.rates)):
+            self.rest_phase = "lowering"
             self._go_home()
+        if self.rest_phase == "recovering" and float(np.max(self.heat.used)) <= self.rest_resume:
+            if self.rest_return is not None:
+                self.rest_phase = "returning"
+                self._log("recovered; going back up")
+                self._plan(self.rest_return, C.REST_RETURN_DEG_S)
+            else:
+                self._finish_rest("recovered; holding at home")
+        elif self.rest_phase == "returning" and self.trajectory is None:
+            self._finish_rest("back where it was; ready again")
+        self._rest_fault()
+
+    def _finish_rest(self, text):
+        self.resting = False
+        self.rest_phase = None
+        self.rest_return = None
+        if not self.cooling:
+            self.fault = None
+        self._log(text)
+
+    def relax(self, reason="Resting so the motors can recover", resume=None, speed_deg_s=None, come_back=True):
+        with self.lock:
+            if not self.torque or self.resting:
+                return False
+            self._start_rest(reason, speed_deg_s or C.MOVE_DEG_S / 2, resume, come_back)
+        return True
+
+    def rest_status(self):
+        if not self.resting:
+            return None
+        return {"phase": self.rest_phase, "eta_s": round(self._rest_eta()) if self.rest_phase == "recovering" else None, "comes_back": self.rest_return is not None, "reason": self.rest_reason}
 
     def _end_rest(self):
         with self.lock:
             if not self.resting:
                 return
             self.resting = False
-            self.strain *= 0.5
+            self.rest_phase = None
+            self.rest_return = None
             self.trajectory = None
             self.target[:6] = self.command[:6]
             self.rate = np.zeros(7)
@@ -300,21 +374,21 @@ class Arm:
                 self.fault = None
         self._log("reset motor " + ", ".join(str(i + 1) for i in bad) + " after its fault; holding where the arm is")
 
-    def _overloaded(self):
+    def _heating(self):
         if not self.torque:
             return []
-        load = np.sqrt(self.load2[:6])
-        return [(i + 1, float(load[i]), float(RATED[i])) for i in range(6) if load[i] > RATED[i] * 1.05 and i not in self.faulted]
+        left = self.heat.seconds_left()
+        return [(i + 1, float(self.heat.used[i]), left[i]) for i in range(6) if self.heat.used[i] >= C.HEAT_WARN and left[i] is not None and i not in self.faulted]
 
     def _alert_tags(self):
-        return (["no gripper"] if self.connected and not self.has_gripper else []) + (["overloaded"] if self._overloaded() else []) + (["blocked"] if self.torque and self.blocked.any() else [])
+        return (["no gripper"] if self.connected and not self.has_gripper else []) + (["heating"] if self._heating() else []) + (["blocked"] if self.torque and self.blocked.any() else [])
 
     def _alert(self):
         parts = []
         if self.connected and not self.has_gripper:
             parts.append(NO_GRIPPER_ALERT)
-        for joint, load, rated in self._overloaded():
-            parts.append(f"Joint {joint} is holding {load:.0f} Nm, above the {rated:.0f} Nm it can hold for long. It will cut out if it stays there, so bring the arm in or lower it")
+        for joint, used, left in self._heating():
+            parts.append(f"Joint {joint} has used {used * 100:.0f}% of what it can hold in this pose. In {left:.0f} s the arm lowers itself, so bring the arm in or down")
         if self.torque and self.blocked.any():
             parts.append("Joint " + ", ".join(str(i + 1) for i in np.flatnonzero(self.blocked)) + " is pressing on something, so it eased off. Pull back to free it")
         return ". ".join(parts) or None
@@ -415,7 +489,9 @@ class Arm:
             self.load2 = np.zeros(7)
             self.pushing = np.zeros(6)
             self.blocked = np.zeros(6, dtype=bool)
-            self.strain = np.zeros(6)
+            if self.heat_at:
+                self.heat.cool(time.monotonic() - self.heat_at)
+            self.heat_at = time.monotonic()
             self.resting = False
             self.catches = []
             self.gripper_stalled = False
@@ -559,7 +635,7 @@ class Arm:
     def torque_history(self):
         with self.lock:
             rows = list(self.history)
-        return {"t": [t for t, _ in rows], "nm": [values for _, values in rows], "rated": RATED[:6].tolist(), "peak": PEAK[:6].tolist()}
+        return {"t": [t for t, _ in rows], "nm": [values for _, values in rows], "rated": self.continuous.tolist(), "peak": PEAK[:6].tolist()}
 
     def _feedback(self, temperatures):
         now = time.monotonic()
@@ -620,20 +696,29 @@ class Arm:
             elif self.trajectory is None:
                 self.fault = f"Over temperature: resting at home, {peak:.0f} C now, usable again below {C.COOLED_C:.0f} C"
 
-    def _go_home(self):
+    def _go_home(self, speed_deg_s=None):
         self.rate[:] = 0.0
         if self.home_q is None or not self.torque:
             self.trajectory = None
             self.target = self.command.copy()
             return
-        goal = np.clip(np.asarray(self.home_q, dtype=float)[:6], LOWER, UPPER)
-        samples = min_jerk(self.command[:6], goal, math.radians(C.COOL_HOME_DEG_S), math.radians(C.MOVE_DEG_S2), 0.01)
+        self._plan(self.home_q, speed_deg_s or C.COOL_HOME_DEG_S)
+
+    def _plan(self, goal, speed_deg_s):
+        goal = np.clip(np.asarray(goal, dtype=float)[:6], LOWER, UPPER)
+        self.rate[:] = 0.0
+        samples = min_jerk(self.command[:6], goal, math.radians(speed_deg_s), math.radians(speed_deg_s * 6), 0.01)
         self.trajectory = (np.array([t for t, _ in samples]), np.array([q for _, q in samples]))
         self.trajectory_start = time.monotonic()
         self.target[:6] = goal
 
     def hold(self):
         with self.lock:
+            if self.resting:
+                self.rest_return = None
+                if self.rest_phase == "returning":
+                    self.rest_phase = "recovering"
+                    self.rest_resume = 1.0
             self.trajectory = None
             self.target = self.command.copy()
             self.rate[:] = 0.0
@@ -730,8 +815,8 @@ class Arm:
                 "name": self.name, "channel": self.channel, "connected": self.connected, "powered": self.torque,
                 "motors_answering": list(self.answering), "fault": self.fault, "cooling": self.cooling, "note": self.note,
                 "alert": self._alert(), "alert_tags": self._alert_tags(), "has_gripper": self.has_gripper, "resting": self.resting,
-                "strain_pct": [round(float(v) * 100 / C.OVERLOAD_BUDGET_S) for v in self.strain],
-                "load_nm": [round(float(v), 1) for v in np.sqrt(self.load2[:6])], "rated_nm": RATED[:6].tolist(),
+                "heat": self.heat.summary() if self.torque else None, "rest": self.rest_status(), "motors": list(self.models),
+                "load_nm": [round(float(v), 1) for v in np.sqrt(self.load2[:6])], "rated_nm": RATED[:6].tolist(), "hold_nm": self.continuous.tolist(),
                 "joints_deg": [round(math.degrees(v), 2) for v in self.measured[:6]],
                 "command_deg": [round(math.degrees(v), 2) for v in self.command[:6]],
                 "velocity_deg_s": [round(math.degrees(v), 1) for v in self.velocity[:6]],

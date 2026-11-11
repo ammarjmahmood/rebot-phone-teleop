@@ -63,6 +63,15 @@ You rarely need joints directly. Prefer tip positions (`robot.move_tip`) and let
 * `left` and `right`: wrist cameras; `locate` intersects the ray with the table plane (or `plane_z`).
 * `robot.find_color(camera, color)` finds red, orange, yellow, green or blue objects and returns their world positions.
 
+## Motor budget
+
+The arms hang off the side of the post, so joint 1 carries the whole arm whenever it reaches forward. A RobStride RS06 holds about 8 Nm for as long as you like while it is still, 11 Nm for about 200 s and 17 Nm for about 15 s (RobStride locked rotor table). Joints 4 to 6 (RS00) hold 5 Nm. The server tracks how much of that each joint has used (`heat` in the arm state, `robot.budget(arm)` in a policy).
+
+* The ready pose costs joint 1 about 7.5 Nm, nearly all of its budget. Reaching straight out costs about 16.6 Nm, which lasts seconds.
+* At 80% the arm relaxes at home by itself, waits until the motors recover (about 2 to 3 minutes) and then goes back to where it was. Moves are refused while it relaxes; `robot.wait_ready()` waits for it.
+* Work quickly, keep the hand close in or low, and park at home, which costs almost nothing.
+* The Sequencer checks every sequence against the budget (`plan_sequence`, or `GET /api/seq/<name>/plan`) and rests the arms before any step that would run out.
+
 ## Habits that work
 
 * Start with `look_all`, write one policy for a whole step (approach, grasp, lift), run it, then `look_all` again.

@@ -56,11 +56,31 @@ async function loadPoses() {
   $('pose-buttons').replaceChildren(...names.map(n => el('button', { class: 'small', onclick: () => act('/api/move', { pose: n, wait: false }) }, n)));
 }
 
+function budgetLevel(a) {
+  if (a.rest) return 'rest';
+  const h = a.heat;
+  if (!h) return 'ok';
+  return h.pct >= 80 ? 'rest' : h.pct >= 50 && h.seconds !== null ? 'warm' : 'ok';
+}
+
+function budgetText(a) {
+  if (a.rest) {
+    const r = a.rest;
+    if (r.phase === 'returning') return 'recovered, going back up';
+    if (r.phase === 'recovering') return `relaxing at home, ${r.comes_back ? 'back up' : 'ready'} in about ${r.eta_s} s`;
+    return 'relaxing at home';
+  }
+  const h = a.heat;
+  if (!h) return a.powered ? 'motor budget full' : '';
+  if (h.seconds !== null) return `joint ${h.joint} has used ${h.pct}% here, ${h.seconds} s before the arm relaxes itself`;
+  return h.pct > 2 ? `joint ${h.joint} at ${h.pct}%, recovering` : 'motor budget full';
+}
+
 function pills() {
   const out = [];
   for (const [name, a] of Object.entries(state.arms)) {
     const cls = a.fault ? 'bad' : a.powered ? 'ok' : a.connected ? 'blue' : 'warn';
-    const text = a.cooling ? 'over temperature, cooling at home' : a.resting ? 'overloaded, lowering' : a.fault ? 'fault' : a.powered ? 'powered' : a.connected ? 'connected, torque off' : 'offline';
+    const text = a.cooling ? 'over temperature, cooling at home' : a.resting ? 'relaxing to recover' : a.fault ? 'fault' : a.powered ? 'powered' : a.connected ? 'connected, torque off' : 'offline';
     out.push(el('span', { class: 'pill ' + cls, title: a.note || '' }, `${name}: ${text}`));
     for (const tag of a.alert_tags || []) out.push(el('span', { class: 'pill warn', title: a.alert || '' }, `${name}: ${tag}`));
   }
@@ -151,8 +171,9 @@ function armCard(name) {
       el('button', { class: 'small go', onclick: () => act('/api/power', { arm: name, on: true }, name + ' holding') }, 'Power on'),
       el('button', { class: 'small', onclick: () => { if (confirm(`Torque off the ${name} arm? Hold it first.`)) act('/api/power', { arm: name, on: false }, name + ' torque off; move it by hand'); } }, 'Power off')),
     el('div', { class: 'note', id: `note-${name}` }),
-    el('table', {}, el('thead', {}, el('tr', {}, el('th', {}, 'Joint'), el('th', {}, 'deg'), el('th', {}, ''), el('th', {}, 'C'), el('th', {}, 'Nm'), el('th', {}, 'grav'), el('th', {}, 'jog'))), body),
-    el('div', { class: 'muted small-text torque-title' }, 'Torque on each joint over the last minute. The dashed line is what the motor can hold for long'),
+    el('div', { class: 'budget', id: `budget-${name}` }),
+    el('table', {}, el('thead', {}, el('tr', {}, el('th', {}, 'Joint'), el('th', {}, 'deg'), el('th', {}, ''), el('th', {}, 'C'), el('th', {}, 'Nm'), el('th', {}, 'grav'), el('th', { title: 'How much of what the motor can hold it has used, from the RobStride overload tables' }, 'budget'), el('th', {}, 'jog'))), body),
+    el('div', { class: 'muted small-text torque-title' }, 'Torque on each joint over the last minute. The dashed line is what the motor can hold for long while still'),
     el('div', { class: 'torque-wrap' }, el('canvas', { class: 'torque', id: `torque-${name}` }), el('div', { class: 'torque-tip', id: `torque-tip-${name}` })),
     el('div', { class: 'buttons' }, el('span', { class: 'muted' }, 'Gripper'), el('span', { class: 'mono', id: `grip-${name}` }),
       el('button', { class: 'small', onclick: () => act('/api/gripper', { arm: name, state: 'open' }) }, 'Open'),
@@ -160,7 +181,7 @@ function armCard(name) {
       el('button', { class: 'small', title: 'Use when the reading is a whole turn off', onclick: () => act('/api/gripper', { arm: name, calibrate: 'open' }, 'Gripper reading set to open') }, 'It is open'),
       el('span', { class: 'grow' }), el('span', { class: 'muted mono', id: `tip-${name}` })));
   for (let i = 0; i < 6; i++) {
-    body.append(el('tr', {}, el('td', {}, 'J' + (i + 1)), el('td', { id: `j-${name}-${i}` }), el('td', {}, el('div', { class: 'bar' }, el('i', { id: `b-${name}-${i}` }))), el('td', { id: `t-${name}-${i}`, class: 'temp' }), el('td', { id: `e-${name}-${i}` }), el('td', { id: `g-${name}-${i}` }),
+    body.append(el('tr', {}, el('td', {}, 'J' + (i + 1)), el('td', { id: `j-${name}-${i}` }), el('td', {}, el('div', { class: 'bar' }, el('i', { id: `b-${name}-${i}` }))), el('td', { id: `t-${name}-${i}`, class: 'temp' }), el('td', { id: `e-${name}-${i}` }), el('td', { id: `g-${name}-${i}` }), el('td', {}, el('div', { class: 'bar heat' }, el('i', { id: `h-${name}-${i}` })), el('small', { class: 'mono', id: `hs-${name}-${i}` })),
       el('td', {}, el('button', { class: 'small', onclick: () => act('/api/jog', { arm: name, joint: i, delta_deg: -5 }) }, '-'), el('button', { class: 'small', onclick: () => act('/api/jog', { arm: name, joint: i, delta_deg: 5 }) }, '+'))));
   }
   $('arm-cards').append(card);
@@ -174,7 +195,7 @@ function renderArms() {
     armCard(name);
     const pill = $(`pill-${name}`);
     pill.className = 'pill ' + (a.fault ? 'bad' : a.powered ? 'ok' : a.connected ? 'blue' : 'warn');
-    pill.textContent = a.cooling ? 'over temperature' : a.resting ? 'overloaded, lowering' : a.fault ? 'fault' : a.powered ? `powered ${a.loop_hz} Hz` : a.connected ? 'torque off, hand guide' : 'offline';
+    pill.textContent = a.cooling ? 'over temperature' : a.resting ? 'relaxing to recover' : a.fault ? 'fault' : a.powered ? `powered ${a.loop_hz} Hz` : a.connected ? 'torque off, hand guide' : 'offline';
     $(`note-${name}`).textContent = [a.alert, a.fault, a.note, a.warm].filter(Boolean).join('. ');
     $(`note-${name}`).className = a.fault ? 'fault' : 'note';
     for (let i = 0; i < 6; i++) {
@@ -187,7 +208,14 @@ function renderArms() {
       cell.className = 'temp' + (t >= 85 ? ' hot' : t >= 70 ? ' warm' : '');
       $(`e-${name}-${i}`).textContent = a.effort_nm[i].toFixed(1);
       $(`g-${name}-${i}`).textContent = a.gravity_nm[i].toFixed(1);
+      const pct = a.heat ? a.heat.pct_all[i] : 0, left = a.heat ? a.heat.seconds_all[i] : null;
+      const bar = $(`h-${name}-${i}`);
+      bar.style.width = Math.min(pct, 100) + '%';
+      bar.className = pct >= 80 ? 'rest' : pct >= 50 ? 'warm' : '';
+      $(`hs-${name}-${i}`).textContent = left !== null ? ` ${left}s` : '';
     }
+    $(`budget-${name}`).textContent = budgetText(a) ? 'Motor budget: ' + budgetText(a) : '';
+    $(`budget-${name}`).className = 'budget ' + budgetLevel(a);
     $(`grip-${name}`).textContent = (a.gripper_m * 100).toFixed(1) + ' cm';
     $(`tip-${name}`).textContent = 'tip ' + a.tip_xyz.map(v => v.toFixed(3)).join(', ');
   }
@@ -277,6 +305,10 @@ function renderTeleop() {
     lines.push(`${n.padEnd(6)} ${a.powered ? 'ready' : a.connected ? 'torque off' : 'offline'}  ${h.engaged ? 'MOVING' : 'holding'}  reach error ${h.reach_error_cm} cm  input age ${h.age_ms ?? '-'} ms`);
   }
   $('tele-status').textContent = lines.join('\n');
+  $('tele-budget').replaceChildren(...Object.entries(state.arms).map(([n, a]) => {
+    const pct = a.heat ? Math.min(a.heat.pct, 100) : 0;
+    return el('div', { class: 'budget-row ' + budgetLevel(a) }, el('b', {}, n), el('div', { class: 'bar heat big' }, el('i', { class: budgetLevel(a), style: `width:${a.rest ? 100 : pct}%` })), el('span', {}, a.connected ? (budgetText(a) || 'torque off') : 'offline'));
+  }));
 }
 $('tele-start').onclick = () => act('/api/teleop/start', { source: 'dashboard' }).then(r => toast('Ready: ' + (r.powered.join(', ') || 'no arm') + (r.offline.length ? '. Offline: ' + r.offline.join(', ') : ''), !r.offline.length));
 $('tele-stop').onclick = () => act('/api/teleop/stop', {}, 'Teleop ended; arms holding');
@@ -295,6 +327,27 @@ async function loadSequences(select) {
   $('seq-items').replaceChildren(...items.map(s => el('div', { class: s.name === state.seqName ? 'on' : '', onclick: () => { state.seqName = s.name; loadSequences(); } }, el('span', {}, s.name), el('small', {}, `${s.steps} steps, ${s.duration_s}s`))));
   state.seq = await api('/api/seq/' + encodeURIComponent(state.seqName));
   renderSequence();
+  loadPlan();
+}
+
+async function loadPlan() {
+  if (!state.seqName) return;
+  try {
+    state.plan = await api(`/api/seq/${encodeURIComponent(state.seqName)}/plan?speed=${+$('seq-speed').value}`);
+  } catch (error) {
+    state.plan = null;
+  }
+  renderPlan();
+  renderSequence();
+}
+
+function renderPlan() {
+  const p = state.plan;
+  if (!p) { $('seq-plan').textContent = ''; return; }
+  const parts = [`Motor check: about ${Math.round(p.seconds)} s at ${p.speed.toFixed(2)}x`];
+  if (p.rest_s) parts.push(`including ${p.rest_s} s of rests so the shoulder motors can recover`);
+  else parts.push('with no rests needed');
+  $('seq-plan').replaceChildren(el('div', { class: p.ok ? 'muted' : 'fault' }, parts.join(', ') + '.'), ...p.problems.map(t => el('div', { class: 'fault' }, t)));
 }
 
 function describe(step) {
@@ -312,6 +365,7 @@ async function saveSequence() {
   const saved = await api('/api/seq/' + encodeURIComponent(old), state.seq, 'PUT');
   state.seqName = saved.name;
   if (old !== saved.name) loadSequences(saved.name);
+  else loadPlan();
 }
 
 let dragFrom = null;
@@ -325,7 +379,10 @@ function renderSequence() {
   $('seq-steps').replaceChildren(...seq.steps.map((step, i) => {
     const field = (key, label, unit, fallback) => el('label', {}, label, el('input', { type: 'number', step: '0.1', value: step[key] ?? fallback, onchange: e => { step[key] = +e.target.value; saveSequence(); } }), unit);
     const extra = [];
-    if (step.type === 'pose') extra.push(field('speed_deg_s', 'speed', 'deg/s', 45), field('pause_s', 'pause', 's', 0));
+    if (step.type === 'pose') extra.push(field('speed_deg_s', 'speed', 'deg/s', 90), field('pause_s', 'pause', 's', 0));
+    const planned = state.plan && state.plan.steps[i];
+    if (planned && planned.problem) extra.push(el('span', { class: 'fault small-text' }, 'too heavy'));
+    else if (planned && planned.rest_s) extra.push(el('span', { class: 'note small-text' }, `rests ${planned.rest_s} s first`));
     if (step.type === 'track') extra.push(field('speed', 'speed', 'x', 1), field('pause_s', 'pause', 's', 0));
     if (step.type === 'wait' || step.type === 'lift') extra.push(field('seconds', '', 's', 1));
     if (step.type === 'lift') extra.push(el('select', { onchange: e => { step.action = e.target.value; saveSequence(); } }, ...['up', 'down'].map(v => el('option', { value: v, selected: step.action === v }, v))));
@@ -379,6 +436,7 @@ $('seq-add-close').onclick = () => addStep({ type: 'gripper', arm: $('seq-arm').
 $('seq-add-lift').onclick = () => addStep({ type: 'lift', action: 'up', seconds: 2 });
 $('seq-loop').onchange = e => { state.seq.loop = e.target.checked; saveSequence(); };
 $('seq-speed').oninput = e => { $('seq-speed-v').textContent = Number(e.target.value).toFixed(2) + 'x'; };
+$('seq-speed').onchange = () => loadPlan();
 $('seq-play').onclick = () => saveSequence().then(() => act(`/api/seq/${encodeURIComponent(state.seqName)}/play`, { loop: $('seq-loop').checked, speed: +$('seq-speed').value }));
 $('seq-stop').onclick = () => act('/api/seq/stop', {}, 'Stopped');
 $('seq-delete').onclick = () => { if (confirm(`Delete ${state.seqName}?`)) api('/api/seq/' + encodeURIComponent(state.seqName), undefined, 'DELETE').then(() => { state.seqName = null; loadSequences(); }); };

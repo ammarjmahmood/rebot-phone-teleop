@@ -260,12 +260,41 @@ def test_motor_fault_stops_the_arm_and_power_on_resets_it(robot):
     assert np.allclose(unit.arm.command[:6], unit.arm.q, atol=math.radians(1))
 
 
-def test_overloaded_joint_raises_an_alert(robot):
+def test_heat_budget_follows_the_motor_tables():
+    from rebot_teleop import heat as H
+    assert H.seconds_at(H.TABLES["rs-06"]["still"], 8.0) == math.inf
+    assert H.seconds_at(H.TABLES["rs-06"]["still"], 11.0) == pytest.approx(200.0)
+    assert H.seconds_at(H.TABLES["rs-06"]["still"], 17.0) == pytest.approx(15.0)
+    assert 200.0 < H.seconds_at(H.TABLES["rs-06"]["still"], 9.5) < 1000.0
+    assert H.seconds_at(H.TABLES["rs-06"]["moving"], 20.0) == pytest.approx(36.0)
+    assert H.seconds_at(H.TABLES["rs-00"]["still"], 7.0) == pytest.approx(43.0)
+    budget = H.Budget(["rs-06"] * 3 + ["rs-00"] * 3)
+    for _ in range(1000):
+        budget.step([11.0, 0, 0, 0, 0, 0], [0] * 6, 0.1)
+    assert budget.used[0] == pytest.approx(0.5, abs=0.01) and budget.used[1] == 0.0
+    assert budget.seconds_left()[0] == pytest.approx(60.0, abs=2.0)
+    moving = H.Budget(["rs-06"])
+    moving.step([10.0], [90.0], 1.0)
+    assert moving.rates[0] == 0.0
+    moving.step([4.0], [90.0], 1.0)
+    assert moving.rates[0] < 0
+    for _ in range(300):
+        budget.step([0.0] * 6, [0] * 6, 0.1)
+    assert budget.used[0] == pytest.approx(0.4, abs=0.01)
+    summary = budget.summary()
+    assert summary["joint"] == 1 and summary["state"] == "cooling" and summary["seconds"] is None
+
+
+def test_heating_joint_raises_an_alert_with_time_left(robot):
     unit = robot.units["left"]
     robot.power_on("left")
-    unit.arm.load2[0] = 16.0 ** 2
+    bus = robot.factory.buses[unit.arm.channel]
+    with unit.arm.lock:
+        unit.arm.heat.used[0] = 0.6
+    bus.torque[0] = 11.0
+    assert wait_until(lambda: "heating" in robot.status()["arms"]["left"]["alert_tags"])
     status = robot.status()["arms"]["left"]
-    assert "overloaded" in status["alert_tags"] and "Joint 1 is holding 16 Nm" in status["alert"]
+    assert "Joint 1 has used 6" in status["alert"] and status["heat"]["joint"] == 1 and 30 < status["heat"]["seconds"] < 45
 
 
 def test_recorder_saves_states_and_camera_frames(robot, tmp_path):
@@ -319,9 +348,10 @@ def test_torque_history_is_served():
         data = client.get("/api/torque").json()
     assert set(data["arms"]) == {"left", "right"}
     assert data["arms"]["left"]["peak"][:4] == [36.0, 36.0, 36.0, 14.0] and data["seconds"] == 60.0
+    assert data["arms"]["left"]["rated"] == [8.0, 8.0, 8.0, 5.0, 5.0, 5.0]
 
 
-def test_overloaded_arm_lowers_only_until_it_can_hold_the_load(robot):
+def test_arm_out_of_budget_relaxes_recovers_and_goes_back_up(robot):
     robot.power_on()
     unit = robot.units["left"]
     robot.go("ready", "left")
@@ -331,23 +361,39 @@ def test_overloaded_arm_lowers_only_until_it_can_hold_the_load(robot):
     start = arm.q.copy()
     bus.torque[0] = 15.0
     with arm.lock:
-        arm.strain[0] = C.OVERLOAD_BUDGET_S - 0.05
+        arm.heat.used[0] = C.HEAT_LOWER - 0.001
     assert wait_until(lambda: arm.resting, 3)
-    assert "lowering until it can hold the load" in arm.fault and not unit.ready and arm.torque
-    time.sleep(1.5)
-    assert arm.resting and arm.busy
-    moved = np.max(np.abs(arm.q - start))
-    assert math.radians(3) < moved < math.radians(C.COOL_HOME_DEG_S * 2)
-    bus.torque[0] = 3.0
-    assert wait_until(lambda: not arm.resting, 3)
-    assert not arm.busy and arm.fault is None and unit.ready
-    assert np.max(np.abs(arm.q - arm.home_q)) > math.radians(10)
-    stopped = arm.q.copy()
-    time.sleep(0.5)
-    assert np.max(np.abs(arm.q - stopped)) < math.radians(0.5)
+    bus.torque[0] = 0.0
+    assert "relaxing at home" in arm.fault and "goes back up" in arm.fault and not unit.ready and arm.torque
+    assert wait_until(lambda: arm.rest_phase == "recovering", 20)
+    assert np.max(np.abs(arm.q - arm.home_q)) < math.radians(2)
+    assert "back up" in robot.status()["arms"]["left"]["rest"]["phase"] or robot.status()["arms"]["left"]["rest"]["eta_s"] > 0
+    with arm.lock:
+        arm.heat.used[:] = 0.1
+    assert wait_until(lambda: not arm.resting, 20)
+    assert arm.fault is None and unit.ready
+    assert np.max(np.abs(arm.q - start)) < math.radians(2)
 
 
-def test_motor_that_cuts_out_is_caught_and_lowered_until_it_holds(robot):
+def test_stop_while_relaxing_keeps_the_arm_down(robot):
+    robot.power_on()
+    unit = robot.units["left"]
+    robot.go("ready", "left")
+    robot.wait(20)
+    arm = unit.arm
+    with arm.lock:
+        arm.heat.used[:] = 0.5
+    assert arm.relax("Test rest")
+    assert wait_until(lambda: arm.rest_phase == "recovering", 20)
+    robot.stop()
+    with arm.lock:
+        arm.heat.used[:] = 0.0
+    assert wait_until(lambda: not arm.resting, 5)
+    time.sleep(0.3)
+    assert np.max(np.abs(arm.q - arm.home_q)) < math.radians(2) and unit.ready
+
+
+def test_motor_that_cuts_out_is_caught_and_relaxes_until_power_on(robot):
     robot.power_on()
     unit = robot.units["left"]
     robot.go("ready", "left")
@@ -357,11 +403,49 @@ def test_motor_that_cuts_out_is_caught_and_lowered_until_it_holds(robot):
     bus.codes[1] = 16
     assert wait_until(lambda: arm.fault is not None and "caught" in arm.fault, 3)
     assert 1 not in bus.codes and arm.torque and not unit.ready
-    assert wait_until(lambda: not arm.busy, 5)
-    assert np.max(np.abs(arm.q - arm.home_q)) > math.radians(10)
+    assert wait_until(lambda: not arm.busy, 20)
+    assert np.max(np.abs(arm.q - arm.home_q)) < math.radians(2)
     assert "caught" in arm.fault and not unit.ready
     robot.power_on("left")
     assert wait_until(lambda: arm.fault is None and unit.ready)
+
+
+def test_sequence_plan_counts_rests_and_flags_impossible_steps(robot):
+    robot.power_on()
+    seq = Sequencer(robot)
+    ready = C.POSES_DEG["ready"]
+    heavy = {"type": "pose", "arms": {"right": ready["right"]}, "speed_deg_s": 90, "pause_s": 300.0, "label": "long hold"}
+    arm = robot.units["right"].arm
+    with arm.lock:
+        arm.heat.used[0] = 0.6
+    plan = seq.plan({"name": "t", "steps": [heavy]})
+    assert plan["ok"] and 20 < plan["steps"][0]["rest_s"] < 120
+    with arm.lock:
+        arm.heat.used[:] = 0.0
+    stretched = {"type": "pose", "arms": {"right": [1.4, 175.0, 147.1, 13.9, -13.0, -158.1]}, "speed_deg_s": 90, "pause_s": 120.0, "label": "reach out"}
+    plan = seq.plan({"name": "t", "steps": [stretched]})
+    assert not plan["ok"] and "joint 1 of the right arm" in plan["problems"][0]
+
+
+def test_sequence_rests_before_a_step_that_would_run_out(robot):
+    robot.power_on()
+    seq = Sequencer(robot)
+    ready = C.POSES_DEG["ready"]
+    arm = robot.units["right"].arm
+    start = arm.q.copy()
+    with arm.lock:
+        arm.heat.used[0] = 0.75
+    seq.save({"name": "rest test", "steps": [{"type": "pose", "arms": {"right": ready["right"]}, "speed_deg_s": 90, "pause_s": 0.5, "label": "go ready"}]})
+    seq.play("rest test")
+    assert wait_until(lambda: arm.resting, 5)
+    assert "Resting before step 1" in arm.fault
+    assert wait_until(lambda: arm.rest_phase == "recovering", 20)
+    with arm.lock:
+        arm.heat.used[:] = 0.0
+    assert wait_until(lambda: seq.playing is None, 30)
+    assert seq.progress is None
+    assert np.max(np.abs(np.degrees(arm.q) - ready["right"])) < 2.0
+    assert np.max(np.abs(arm.q - start)) > math.radians(10)
 
 
 def test_hold_here_holds_a_hand_placed_arm_where_it_is():

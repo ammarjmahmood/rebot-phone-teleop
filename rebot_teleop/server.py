@@ -426,6 +426,10 @@ def create_app(sim=False, arms=("left", "right"), start_hardware=True):
         step = sequencer.stop_recording(data.get("name"), data.get("label"))
         return {"steps": len(step["t"]), "seconds": round(step["t"][-1] - step["t"][0], 2)}
 
+    @app.get("/api/seq/{name}/plan")
+    async def seq_plan(name: str, speed: float = None):
+        return await asyncio.to_thread(sequencer.plan, sequencer.get(name), speed)
+
     @app.post("/api/seq/{name}/play")
     async def seq_play(name: str, request: Request):
         data = await body(request)
@@ -549,7 +553,7 @@ def create_app(sim=False, arms=("left", "right"), start_hardware=True):
                 now = time.monotonic()
                 if now - last_report > 0.2:
                     last_report = now
-                    report = {"type": "status", "t": sent, "teleop": teleop.status(), "arms": {n: {"ready": u.ready, "note": u.status()["note"], "fault": u.arm.fault, "connected": u.arm.connected} for n, u in robot.units.items()}}
+                    report = {"type": "status", "t": sent, "teleop": teleop.status(), "arms": {n: {"ready": u.ready, "note": u.status()["note"], "fault": u.arm.fault, "connected": u.arm.connected, "heat": u.arm.heat.summary() if u.arm.torque else None, "rest": u.arm.rest_status()} for n, u in robot.units.items()}}
                     await websocket.send_text(json.dumps(report))
         except (WebSocketDisconnect, RuntimeError, ValueError):
             pass

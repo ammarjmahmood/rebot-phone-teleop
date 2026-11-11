@@ -5,8 +5,10 @@ import threading
 import time
 import numpy as np
 from rebot_teleop import config as C
+from rebot_teleop.arm import LOWER, UPPER, min_jerk
 
 FOLDER = C.DATA / "sequences"
+PLAN_DT = 0.1
 SAFE = re.compile(r"[^A-Za-z0-9 _.()-]+")
 
 
@@ -183,10 +185,142 @@ class Sequencer:
 
     def _wait_arms(self, timeout=120):
         end = time.monotonic() + timeout
-        while any(u.arm.busy for u in self.robot.units.values()):
-            if self.stop_flag.is_set() or time.monotonic() > end:
+        rest_end = time.monotonic() + C.REST_TIMEOUT_S
+        while True:
+            arms = [u.arm for u in self.robot.units.values()]
+            resting = any(a.resting for a in arms)
+            if not resting and not any(a.busy for a in arms):
+                return True
+            if self.stop_flag.is_set() or time.monotonic() > (rest_end if resting else end):
                 return False
             time.sleep(0.01)
+
+    def _gravity(self, name):
+        if not hasattr(self, "gravities"):
+            self.gravities = {}
+        if name not in self.gravities:
+            self.gravities[name] = self.robot.units[name].kin.gravity_function()
+        return self.gravities[name]
+
+    def _paths(self, step, speed, current):
+        kind = step.get("type")
+        paths, hold = {}, 0.0
+        if kind == "pose":
+            for name, joints in step.get("arms", {}).items():
+                if name in current:
+                    goal = np.clip(np.radians(joints), LOWER, UPPER)
+                    paths[name] = [q for _, q in min_jerk(current[name], goal, math.radians(float(step.get("speed_deg_s", C.MOVE_DEG_S)) * speed), math.radians(C.MOVE_DEG_S2 * speed), PLAN_DT)]
+            hold = float(step.get("pause_s", 0.0)) / speed
+        elif kind == "gripper":
+            hold = 0.6 / speed
+        elif kind == "wait":
+            hold = float(step.get("seconds", 1.0)) / speed
+        elif kind == "lift":
+            hold = float(step.get("seconds", 1.0))
+        elif kind == "track":
+            rate = float(step.get("speed", 1.0)) * speed
+            t = (np.asarray(step["t"], dtype=float) - step["t"][0]) / rate
+            for name, rows in step["arms"].items():
+                if name not in current:
+                    continue
+                joints = np.clip(np.radians(smooth(np.asarray(rows, dtype=float))[:, :6]), LOWER, UPPER)
+                approach = [q for _, q in min_jerk(current[name], joints[0], math.radians(40.0 * min(speed, 2.0)), math.radians(C.MOVE_DEG_S2), PLAN_DT)]
+                grid = np.arange(0.0, t[-1] + PLAN_DT, PLAN_DT)
+                played = [np.array([np.interp(g, t, joints[:, j]) for j in range(6)]) for g in grid]
+                paths[name] = approach + played
+            hold = float(step.get("pause_s", 0.0)) / speed
+        count = max([len(p) for p in paths.values()] + [1]) + int(math.ceil(hold / PLAN_DT))
+        out = {}
+        for name, q in current.items():
+            path = paths.get(name) or [q]
+            out[name] = [np.asarray(path[min(i, len(path) - 1)], dtype=float) for i in range(count)]
+        return out, count * PLAN_DT
+
+    def _use(self, name, budget, path):
+        gravity = self._gravity(name)
+        used = budget.used.copy()
+        peak = used.copy()
+        torque_peak = np.zeros(6)
+        for i, q in enumerate(path):
+            torque = np.abs(np.asarray(gravity(q), dtype=float)) * C.HEAT_MODEL_MARGIN
+            torque_peak = np.maximum(torque_peak, torque)
+            moved = np.degrees(np.abs(q - path[i - 1])) / PLAN_DT if i else np.zeros(6)
+            budget.step(torque, moved, PLAN_DT)
+            peak = np.maximum(peak, budget.used)
+        rise = peak - used
+        return rise, torque_peak
+
+    def _rest_target(self, rise):
+        return float(np.min(C.HEAT_PLAN_LIMIT - rise))
+
+    def _too_much(self, rise, torque, name, index, step):
+        joint = int(np.argmax(rise))
+        label = step.get("label") or step.get("type")
+        return f"Step {index + 1} ({label}) asks joint {joint + 1} of the {name} arm to hold about {torque[joint]:.0f} Nm for longer than it can, even fully rested. Shorten its pause, speed it up, or bring that pose closer in or lower"
+
+    def plan(self, data, speed=None):
+        speed = max(0.05, float(data.get("speed", 1.0) if speed is None else speed))
+        current, budgets = {}, {}
+        for name, unit in self.robot.units.items():
+            arm = unit.arm
+            if not arm.connected:
+                continue
+            current[name] = (arm.command[:6] if arm.torque else arm.measured[:6]).copy()
+            budgets[name] = arm.heat.copy()
+            if not arm.torque:
+                budgets[name].used[:] = 0.0
+        steps, total, resting, problems = [], 0.0, 0.0, []
+        for index, step in enumerate(data.get("steps", [])):
+            paths, seconds = self._paths(step, speed, current)
+            entry = {"index": index, "label": step.get("label") or step.get("type"), "seconds": round(seconds, 1), "rest_s": 0, "peak": {}}
+            rest = 0.0
+            for name, path in paths.items():
+                rise, torque = self._use(name, budgets[name].copy(), path)
+                target = self._target_or_none(rise)
+                if target is None:
+                    entry["problem"] = self._too_much(rise, torque, name, index, step)
+                    problems.append(entry["problem"])
+                    continue
+                over = float(np.max(budgets[name].used)) - target
+                if over > 0:
+                    rest = max(rest, over * C.HEAT_COOL_S)
+            if rest:
+                entry["rest_s"] = round(rest)
+                for budget in budgets.values():
+                    budget.cool(rest)
+            for name, path in paths.items():
+                self._use(name, budgets[name], path)
+                worst = int(np.argmax(budgets[name].used))
+                entry["peak"][name] = {"joint": worst + 1, "pct": round(float(budgets[name].used[worst]) * 100)}
+                current[name] = path[-1]
+            total += seconds + rest
+            resting += rest
+            steps.append(entry)
+        return {"ok": not problems, "seconds": round(total, 1), "rest_s": round(resting), "steps": steps, "problems": problems, "speed": speed}
+
+    def _target_or_none(self, rise):
+        target = self._rest_target(rise)
+        return None if target < 0 else target
+
+    def _prepare(self, index, step, speed):
+        current = {n: u.arm.command[:6].copy() for n, u in self.robot.units.items() if u.arm.torque}
+        if not current:
+            return True
+        paths, _ = self._paths(step, speed, current)
+        rested = False
+        for name, path in paths.items():
+            arm = self.robot.units[name].arm
+            rise, torque = self._use(name, arm.heat.copy(), path)
+            target = self._target_or_none(rise)
+            if target is None:
+                raise ValueError(self._too_much(rise, torque, name, index, step))
+            if float(np.max(arm.heat.used)) > target:
+                joint = int(np.argmax(arm.heat.used)) + 1
+                label = step.get("label") or step.get("type")
+                self.progress = {"index": index, "label": f"resting joint {joint} of the {name} arm before {label}", "of": self.progress["of"] if self.progress else index + 1}
+                rested = arm.relax(f"Resting before step {index + 1} so joint {joint} has enough left for it", resume=target) or rested
+        if rested:
+            return self._wait_arms()
         return True
 
     def _play(self, data, loop, speed, start):
@@ -198,8 +332,19 @@ class Sequencer:
                     if self.stop_flag.is_set():
                         return
                     self.progress = {"index": index, "label": step.get("label") or step.get("type"), "of": len(data["steps"])}
-                    if not self._run(step, speed):
-                        return
+                    for attempt in range(3):
+                        if not self._prepare(index, step, speed):
+                            return
+                        self.progress = {"index": index, "label": step.get("label") or step.get("type"), "of": len(data["steps"])}
+                        before = {n: u.arm.rests for n, u in self.robot.units.items()}
+                        if not self._run(step, speed):
+                            return
+                        if all(u.arm.rests == before[n] for n, u in self.robot.units.items()):
+                            break
+                        if not self._wait_arms():
+                            return
+                    else:
+                        raise ValueError(f"Step {index + 1} kept running out of motor budget; it needs a lighter pose or a shorter pause")
                 start = 0
                 if not loop:
                     return

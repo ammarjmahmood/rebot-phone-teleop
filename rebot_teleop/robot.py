@@ -46,7 +46,7 @@ class Unit:
         self.kin = Kinematics(self.mount)
         self.factory = factory
         self.channel = C.DEFAULT_CAN.get(name, "can0")
-        self.arm = Arm(name, self.channel, gravity=self.kin.gravity_function(), controller_factory=factory)
+        self.arm = Arm(name, self.channel, gravity=self.kin.gravity_function(), controller_factory=factory, motors=settings.get("motors"))
         self.arm.home_q = np.radians(C.POSES_DEG["home"][name])
         gripper = settings.get("gripper_range")
         if gripper:

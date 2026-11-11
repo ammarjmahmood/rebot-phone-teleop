@@ -94,6 +94,7 @@
         <label><input id="tele-rot" type="checkbox"> Follow hand rotation</label>
         <label><input id="tele-gaze" type="checkbox"> Forward is where you look when you grip</label>
       </div>
+      <div id="tele-budget" class="tele-budget"></div>
       <div id="tele-status" class="mono"></div>
       <div class="lift" id="lift-tele"></div>
     </div>
@@ -118,7 +119,7 @@
       <div class="buttons">
         <label>Arms <select id="seq-arm"><option value="">Both</option><option value="left">Left</option><option value="right">Right</option></select></label>
         <span id="seq-point-tools"><button class="go" id="seq-capture">Save point</button>
-        <label>Speed <input id="seq-step-speed" type="number" value="45" min="5" max="180" step="5"> deg/s</label></span>
+        <label>Speed <input id="seq-step-speed" type="number" value="90" min="5" max="180" step="5"> deg/s</label></span>
         <span id="seq-record-tools" hidden><button class="rec" id="seq-record">Start recording</button><span id="seq-rec-note" class="muted"></span></span>
         <span class="sep"></span>
         <button class="small" id="seq-add-wait">+ Wait</button>
@@ -128,6 +129,7 @@
       </div>
       <p class="muted small-text" id="seq-hint">Move the arms with teleop, or power an arm off and move it by hand, then Save point. Record motion captures the real trajectory at 50 Hz.</p>
       <ol id="seq-steps"></ol>
+      <div id="seq-plan" class="small-text"></div>
       <div class="buttons play">
         <button class="go" id="seq-play">Play</button>
         <label><input type="checkbox" id="seq-loop"> Loop</label>

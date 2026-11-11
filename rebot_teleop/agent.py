@@ -13,14 +13,20 @@ DEFAULT_URL = os.environ.get("REBOT_URL", "http://127.0.0.1:8081")
 API = """robot = Robot()  (already made for you in run_policy)
 
 State
-  robot.state()                      dict per arm: joints_deg, tip_xyz, gripper_m, powered, note
+  robot.state()                      dict per arm: joints_deg, tip_xyz, gripper_m, powered, note, budget
+  robot.budget(arm)                  motor budget: worst joint, pct used, seconds left before the arm relaxes itself
+  robot.wait_ready(arm=None)         waits while an arm relaxes to recover, then returns
+
+Motor budget: the shoulder (joint 1) can hold about 8 Nm while still. Reaching far out uses it up in minutes,
+then the arm relaxes at home, recovers and goes back up by itself. Work fast, keep poses close in or low,
+and do not park with the arm stretched out. The hanging home pose costs almost nothing.
   robot.tip(arm) -> np.array xyz     robot.joints(arm) -> degrees
 
 Power (holds still where the arm is; nothing moves)
   robot.power_on(arm=None)           robot.power_off(arm=None)
 
-Move (smooth, waits until done unless wait=False; speed in deg/s, default 45)
-  robot.move_joints(arm, [6 deg], speed=45)
+Move (smooth, waits until done unless wait=False; speed in deg/s, default 90)
+  robot.move_joints(arm, [6 deg], speed=90)
   robot.move_tip(arm, xyz, rotation=None)      rotation: None keeps the hand angle, "down", a yaw in degrees for top down, or a 3x3 matrix
   robot.move_tip_by(arm, [dx, dy, dz])
   robot.go("home" | "ready" | saved pose name, arm=None)
@@ -75,7 +81,19 @@ class Robot:
 
     def state(self):
         arms = self._call("GET", "/api/status")["arms"]
-        return {name: {"joints_deg": a["joints_deg"], "tip_xyz": a["tip_xyz"], "gripper_m": a["gripper_m"], "powered": a["powered"], "connected": a["connected"], "note": a["note"] or a["fault"]} for name, a in arms.items()}
+        return {name: {"joints_deg": a["joints_deg"], "tip_xyz": a["tip_xyz"], "gripper_m": a["gripper_m"], "powered": a["powered"], "connected": a["connected"], "note": a["note"] or a["fault"], "budget": a.get("heat")} for name, a in arms.items()}
+
+    def budget(self, arm):
+        return self._call("GET", "/api/status")["arms"][arm].get("heat")
+
+    def wait_ready(self, arm=None, timeout_s=600.0):
+        end = time.monotonic() + timeout_s
+        while time.monotonic() < end:
+            arms = self._call("GET", "/api/status")["arms"]
+            if not any(a.get("rest") for name, a in arms.items() if arm in (None, name)):
+                return True
+            time.sleep(1.0)
+        return False
 
     def tip(self, arm):
         return np.asarray(self.state()[arm]["tip_xyz"])
@@ -94,16 +112,16 @@ class Robot:
             return rotation
         return np.asarray(rotation, dtype=float).tolist()
 
-    def move_joints(self, arm, joints_deg, speed=45.0, wait=True):
+    def move_joints(self, arm, joints_deg, speed=90.0, wait=True):
         return self._call("POST", "/api/move", {"arm": arm, "joints_deg": list(map(float, joints_deg)), "speed_deg_s": speed, "wait": wait})
 
-    def move_tip(self, arm, xyz, rotation=None, speed=45.0, wait=True):
+    def move_tip(self, arm, xyz, rotation=None, speed=90.0, wait=True):
         return self._call("POST", "/api/move", {"arm": arm, "tip_xyz": list(map(float, xyz)), "rotation": self._rot(rotation), "speed_deg_s": speed, "wait": wait})
 
-    def move_tip_by(self, arm, delta, rotation=None, speed=45.0, wait=True):
+    def move_tip_by(self, arm, delta, rotation=None, speed=90.0, wait=True):
         return self._call("POST", "/api/move", {"arm": arm, "tip_delta": list(map(float, delta)), "rotation": self._rot(rotation), "speed_deg_s": speed, "wait": wait})
 
-    def go(self, pose, arm=None, speed=45.0, wait=True):
+    def go(self, pose, arm=None, speed=90.0, wait=True):
         return self._call("POST", "/api/move", {"pose": pose, "arm": arm, "speed_deg_s": speed, "wait": wait})
 
     def home(self):
