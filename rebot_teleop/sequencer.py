@@ -19,6 +19,26 @@ def clean_name(name):
     return name
 
 
+OVER_DEG = 1.0
+
+
+def beyond(name, rows, lower, upper):
+    rows = np.atleast_2d(np.asarray(rows, dtype=float))[:, :6]
+    low, high = np.degrees(lower[:6]), np.degrees(upper[:6])
+    out = []
+    for joint in range(6):
+        least, most = float(rows[:, joint].min()), float(rows[:, joint].max())
+        if most > high[joint] + OVER_DEG:
+            out.append({"arm": name, "joint": joint + 1, "deg": round(most), "limit": round(float(high[joint]))})
+        if least < low[joint] - OVER_DEG:
+            out.append({"arm": name, "joint": joint + 1, "deg": round(least), "limit": round(float(low[joint]))})
+    return out
+
+
+def over_text(items):
+    return "; ".join(f"{o['arm']} joint {o['joint']} went to {o['deg']} deg but playback stops at {o['limit']}" for o in items)
+
+
 def smooth(values, window=5):
     values = np.asarray(values, dtype=float)
     if len(values) < window:
@@ -109,7 +129,7 @@ class Sequencer:
         names = [u.name for u in self.robot.pick(arms) if u.arm.connected]
         if not names:
             raise ValueError("No arm is connected to record")
-        self.recording = {"arms": names, "rate_hz": rate_hz, "t": [], "data": {n: [] for n in names}, "started": time.monotonic()}
+        self.recording = {"arms": names, "rate_hz": rate_hz, "t": [], "data": {n: [] for n in names}, "over": {}, "started": time.monotonic()}
         self.record_thread = threading.Thread(target=self._record, daemon=True)
         self.record_thread.start()
         return {"recording": names}
@@ -122,7 +142,13 @@ class Sequencer:
             rec["t"].append(round(t, 4))
             for name in rec["arms"]:
                 arm = self.robot.units[name].arm
-                rec["data"][name].append([round(math.degrees(v), 3) for v in arm.q] + [round(arm.width, 4)])
+                row = [round(math.degrees(v), 3) for v in arm.q] + [round(arm.width, 4)]
+                rec["data"][name].append(row)
+                for item in beyond(name, [row], arm.lower, arm.upper):
+                    key = (name, item["joint"], item["limit"])
+                    old = rec["over"].get(key)
+                    if old is None or abs(item["deg"] - item["limit"]) > abs(old["deg"] - old["limit"]):
+                        rec["over"][key] = item
             time.sleep(period)
 
     def stop_recording(self, name=None, label=None):
@@ -135,6 +161,8 @@ class Sequencer:
         if len(rec["t"]) < 3:
             raise ValueError("The recording is too short")
         step = {"type": "track", "label": label or time.strftime("Motion %H:%M:%S"), "rate_hz": rec["rate_hz"], "t": rec["t"], "arms": rec["data"], "speed": 1.0, "pause_s": 0.0}
+        if rec["over"]:
+            step["over"] = list(rec["over"].values())
         if name:
             self.add(name, step)
         return step
@@ -271,10 +299,14 @@ class Sequencer:
             budgets[name] = arm.heat.copy()
             if not arm.torque:
                 budgets[name].used[:] = 0.0
-        steps, total, resting, problems = [], 0.0, 0.0, []
+        steps, total, resting, problems, warnings = [], 0.0, 0.0, [], []
         for index, step in enumerate(data.get("steps", [])):
             paths, seconds = self._paths(step, speed, current)
             entry = {"index": index, "label": step.get("label") or step.get("type"), "seconds": round(seconds, 1), "rest_s": 0, "peak": {}}
+            over = self._over(step)
+            if over:
+                entry["over"] = over
+                warnings.append(f"Step {index + 1} ({entry['label']}) will be cut short: {over_text(over)}")
             rest = 0.0
             for name, path in paths.items():
                 rise, torque = self._use(name, budgets[name].copy(), path)
@@ -298,7 +330,18 @@ class Sequencer:
             total += seconds + rest
             resting += rest
             steps.append(entry)
-        return {"ok": not problems or self.robot.heavy, "heavy": self.robot.heavy, "seconds": round(total, 1), "rest_s": 0 if self.robot.heavy else round(resting), "steps": steps, "problems": problems, "speed": speed}
+        return {"ok": not problems or self.robot.heavy, "heavy": self.robot.heavy, "seconds": round(total, 1), "rest_s": 0 if self.robot.heavy else round(resting), "steps": steps, "problems": problems, "warnings": warnings, "speed": speed}
+
+    def _over(self, step):
+        if step.get("type") not in ("pose", "track"):
+            return []
+        out = []
+        for name, rows in (step.get("arms") or {}).items():
+            unit = self.robot.units.get(name)
+            if unit is None or not rows:
+                continue
+            out += beyond(name, rows, unit.arm.lower, unit.arm.upper)
+        return out
 
     def _target_or_none(self, rise):
         target = self._rest_target(rise)
@@ -428,6 +471,6 @@ class Sequencer:
     def status(self):
         rec = self.recording
         return {
-            "recording": None if rec is None else {"arms": rec["arms"], "seconds": round(time.monotonic() - rec["started"], 1), "samples": len(rec["t"])},
+            "recording": None if rec is None else {"arms": rec["arms"], "seconds": round(time.monotonic() - rec["started"], 1), "samples": len(rec["t"]), "over": list(rec["over"].values())},
             "playing": self.playing, "progress": self.progress,
         }

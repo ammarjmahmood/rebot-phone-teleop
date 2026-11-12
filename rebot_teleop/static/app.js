@@ -351,7 +351,7 @@ function renderPlan() {
   if (p.heavy) parts.push('heavy poses on, so it plays every step without rests and the timer still shows');
   if (p.rest_s) parts.push(`including ${p.rest_s} s of rests so the shoulder motors can recover`);
   else parts.push('with no rests needed');
-  $('seq-plan').replaceChildren(el('div', { class: p.ok ? 'muted' : 'fault' }, parts.join(', ') + '.'), ...p.problems.map(t => el('div', { class: 'fault' }, t)));
+  $('seq-plan').replaceChildren(el('div', { class: p.ok ? 'muted' : 'fault' }, parts.join(', ') + '.'), ...p.problems.map(t => el('div', { class: 'fault' }, t)), ...(p.warnings || []).map(t => el('div', { class: 'note' }, t)));
 }
 
 function describe(step) {
@@ -387,6 +387,7 @@ function renderSequence() {
     const planned = state.plan && state.plan.steps[i];
     if (planned && planned.problem) extra.push(el('span', { class: 'fault small-text' }, 'too heavy'));
     else if (planned && planned.rest_s) extra.push(el('span', { class: 'note small-text' }, `rests ${planned.rest_s} s first`));
+    if (planned && planned.over) extra.push(el('span', { class: 'note small-text', title: planned.over.map(o => `${o.arm} joint ${o.joint}: ${o.deg} deg, playback stops at ${o.limit}`).join('\n') }, 'cut short'));
     if (step.type === 'track') extra.push(field('speed', 'speed', 'x', 1), field('pause_s', 'pause', 's', 0));
     if (step.type === 'wait' || step.type === 'lift') extra.push(field('seconds', '', 's', 1));
     if (step.type === 'lift') extra.push(el('select', { onchange: e => { step.action = e.target.value; saveSequence(); } }, ...['up', 'down'].map(v => el('option', { value: v, selected: step.action === v }, v))));
@@ -414,8 +415,12 @@ function renderSeqStatus() {
   const s = state.sequencer;
   const rec = s.recording;
   $('seq-record').textContent = rec ? `Stop recording (${rec.seconds} s)` : 'Start recording';
-  $('seq-rec-note').textContent = rec ? `${rec.samples} samples of ${rec.arms.join(' and ')}` : 'Move the arms by hand (torque off) or with teleop while recording.';
+  const over = rec && rec.over && rec.over.length ? rec.over : null;
+  $('seq-rec-note').textContent = rec ? `${rec.samples} samples of ${rec.arms.join(' and ')}` + (over ? '. Past what playback can do: ' + over.map(o => `${o.arm} joint ${o.joint} at ${o.deg} deg (stops at ${o.limit})`).join(', ') : '') : 'Move the arms by hand (torque off) or with teleop while recording.';
+  $('seq-rec-note').className = over ? 'note' : 'muted';
   $('seq-progress').textContent = s.playing ? `Playing ${s.playing}: step ${s.progress ? s.progress.index + 1 : ''} of ${s.progress ? s.progress.of : ''} ${s.progress && s.progress.label ? '(' + s.progress.label + ')' : ''}` : (s.progress && s.progress.error ? 'Stopped: ' + s.progress.error : '');
+  const own = Object.entries(state.arms || {}).filter(([, a]) => a && a.powered && (a.rest || a.fault)).map(([name, a]) => { const arm = name[0].toUpperCase() + name.slice(1) + ' arm'; return a.rest ? `${arm} is moving on its own to protect its motors: ${a.fault || a.rest.reason}` : `${arm}: ${a.fault}`; });
+  $('seq-safety').replaceChildren(...own.map(t => el('div', { class: 'note' }, t)));
   const key = (s.playing || '') + (s.progress ? s.progress.index : '');
   if (state.lastSeqKey !== key) { state.lastSeqKey = key; renderSequence(); }
 }

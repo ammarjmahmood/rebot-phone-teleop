@@ -92,6 +92,8 @@ class Arm:
         self.bucket = np.zeros(7)
         self.bucket_at = 0.0
         self.offset = np.zeros(7)
+        self.position_known = False
+        self.turn_fixes = 0
         self.measured = np.zeros(7)
         self.velocity = np.zeros(7)
         self.effort = np.zeros(7)
@@ -189,8 +191,10 @@ class Arm:
             self.note = None
             self.fault = None
         try:
+            previous = self._known()
+            self.position_known = False
             self.offset = np.zeros(7)
-            self.offset = self._wrap_offsets(self.read_positions())
+            self.offset = self._wrap_offsets(self.read_positions(follow=False), previous)
             self.read_positions()
             for index, motor in enumerate(motors):
                 try:
@@ -432,16 +436,20 @@ class Arm:
         except Exception:
             return False
 
-    def _wrap_offsets(self, raw):
+    def _known(self):
+        return self.measured[:6].copy() if self.position_known else None
+
+    def _wrap_offsets(self, raw, previous=None):
         offsets = np.zeros(7)
         for index in range(6):
             low, high = LOWER[index] - SLACK, UPPER[index] + SLACK
-            if low <= raw[index] <= high:
+            fits = [turn for turn in (0.0, 2 * math.pi, -2 * math.pi, 4 * math.pi, -4 * math.pi) if low <= raw[index] + turn <= high]
+            if not fits:
                 continue
-            for turn in (2 * math.pi, -2 * math.pi, 4 * math.pi, -4 * math.pi):
-                if low <= raw[index] + turn <= high:
-                    offsets[index] = turn
-                    break
+            if previous is not None and len(fits) > 1:
+                offsets[index] = min(fits, key=lambda turn: abs(raw[index] + turn - previous[index]))
+            else:
+                offsets[index] = fits[0]
         low = min(self.gripper_closed, self.gripper_open) - math.radians(30)
         high = max(self.gripper_closed, self.gripper_open) + math.radians(30)
         if not low <= raw[6] <= high:
@@ -451,14 +459,30 @@ class Arm:
                     break
         return offsets
 
-    def read_positions(self):
+    def _follow(self, index, raw):
+        value = raw + self.offset[index]
+        if index >= 6 or not self.position_known:
+            return value
+        turns = round((self.measured[index] - value) / (2 * math.pi))
+        if not turns:
+            return value
+        shift = turns * 2 * math.pi
+        self.offset[index] += shift
+        self.turn_fixes += 1
+        self._log(f"joint {index + 1} reading jumped {math.degrees(-shift):+.0f} deg in one sample; treating it as the same position ({math.degrees(value):.0f} is {math.degrees(value + shift):.0f})")
+        return value + shift
+
+    def read_positions(self, follow=True):
         with self.lock:
             values = [motor.robstride_get_param_f32(POSITION_PARAM, 300) for motor in self.motors]
             if not all(math.isfinite(v) for v in values):
                 raise ValueError("Position feedback is not finite")
             measured = self.measured.copy()
-            measured[:len(values)] = np.array(values, dtype=float) + self.offset[:len(values)]
+            for index, value in enumerate(values):
+                measured[index] = self._follow(index, float(value)) if follow else float(value) + self.offset[index]
             self.measured = measured
+            if follow:
+                self.position_known = True
             self.feedback_at = time.monotonic()
             return self.measured.copy()
 
@@ -498,8 +522,10 @@ class Arm:
         except ImportError:
             mit = None
         with self.lock:
+            previous = self._known()
+            self.position_known = False
             self.offset = np.zeros(7)
-            self.offset = self._wrap_offsets(self.read_positions())
+            self.offset = self._wrap_offsets(self.read_positions(follow=False), previous)
             q = self.read_positions()
             for motor in self.motors:
                 try:
@@ -689,7 +715,7 @@ class Arm:
                 elif now - self.code_logged > 0.25:
                     self.code_logged = now
                     self._log(f"motor {index + 1} status code {code}")
-            self.measured[index] = state.pos + self.offset[index]
+            self.measured[index] = self._follow(index, float(state.pos))
             self.velocity[index] = state.vel if math.isfinite(state.vel) else 0.0
             self.effort[index] = state.torq if math.isfinite(state.torq) else 0.0
             self.load2[index] += (self.effort[index] ** 2 - self.load2[index]) * blend

@@ -259,6 +259,49 @@ def test_motor_fault_stops_the_arm_and_power_on_resets_it(robot):
     assert np.allclose(unit.arm.command[:6], unit.arm.q, atol=math.radians(1))
 
 
+def test_reading_that_jumps_a_whole_turn_keeps_the_joint_where_it_is(robot):
+    unit = robot.units["left"]
+    robot.power_on("left")
+    time.sleep(0.2)
+    bus = robot.factory.buses[unit.arm.channel]
+    before = unit.arm.q.copy()
+    with bus.lock:
+        bus.pos[1] -= 2 * math.pi
+        bus.goal[1] -= 2 * math.pi
+        shifted = bus.pos[1]
+    time.sleep(0.4)
+    assert unit.arm.turn_fixes == 1
+    assert np.max(np.abs(unit.arm.q - before)) < math.radians(1)
+    assert abs(bus.pos[1] - shifted) < math.radians(1)
+    robot.power_off("left")
+    with bus.lock:
+        bus.pos[2] += 2 * math.pi
+        bus.goal[2] += 2 * math.pi
+    unit.arm.refresh()
+    assert unit.arm.turn_fixes == 2
+    assert np.max(np.abs(unit.arm.q - before)) < math.radians(1)
+
+
+def test_sequencer_warns_when_a_recording_goes_past_what_playback_can_do(robot, tmp_path, monkeypatch):
+    import rebot_teleop.sequencer as S
+    monkeypatch.setattr(S, "FOLDER", tmp_path)
+    seq = Sequencer(robot)
+    unit = robot.units["right"]
+    bus = robot.factory.buses[unit.arm.channel]
+    seq.start_recording("right", 50)
+    time.sleep(0.2)
+    joints = [math.degrees(v) for v in unit.arm.q]
+    joints[2] = 230.0
+    bus.move_by_hand(joints)
+    assert wait_until(lambda: seq.status()["recording"]["over"], 5)
+    step = seq.stop_recording("cut")
+    assert {(o["arm"], o["joint"], o["limit"]) for o in step["over"]} == {("right", 3, 178)}
+    seq.add("cut", {"type": "pose", "arms": {"left": [0, 90, 90, 0, 0, 0]}, "grippers": {}, "speed_deg_s": 90, "pause_s": 0})
+    plan = seq.plan(seq.get("cut"))
+    assert len(plan["warnings"]) == 1 and "right joint 3" in plan["warnings"][0]
+    assert plan["steps"][0]["over"] and "over" not in plan["steps"][1]
+
+
 def test_heat_budget_follows_the_motor_tables():
     from rebot_teleop import heat as H
     assert H.seconds_at(H.TABLES["rs-06"]["still"], 8.0) == math.inf
