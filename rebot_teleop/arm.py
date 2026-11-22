@@ -3,12 +3,14 @@ import math
 import threading
 import time
 import traceback
+from types import SimpleNamespace
 import numpy as np
 from rebot_teleop import config as C
 from rebot_teleop import heat as H
 
 POSITION_PARAM = 0x7019
 TORQUE_LIMIT_PARAM = 0x700B
+VOLTAGE_PARAM = 0x701C
 LOWER = np.radians([low for low, _ in C.LIMITS_DEG])
 UPPER = np.radians([high for _, high in C.LIMITS_DEG])
 SLACK = math.radians(C.LIMIT_SLACK_DEG)
@@ -16,6 +18,10 @@ SERVO_MAX = np.radians(list(C.SERVO_MAX_DEG_S) + [C.GRIPPER_DEG_S])
 SERVO_ACCEL = math.radians(C.SERVO_MAX_DEG_S2)
 GRIPPER_LEAD = math.radians(C.GRIPPER_LEAD_DEG)
 GRIPPER_HOLD_LEAD = math.radians(C.GRIPPER_HOLD_LEAD_DEG)
+GRIPPER_PAST_OPEN_DEG = 95.0
+GRIPPER_BELOW_CLOSED_DEG = 12.0
+GRIPPER_PAST_OPEN_SURE_DEG = 5.0
+GRIPPER_TRUST_DEG = 60.0
 
 
 def min_jerk(start, goal, speed, accel, dt):
@@ -43,10 +49,56 @@ HOLD_LEAD = RATED[:6] / KP
 NO_GRIPPER_ALERT = "Gripper motor 7 is not answering. This arm is running without its gripper. After fixing the cable, press Power on to pick it up"
 
 
+HELDABLE = {5}
+
+
+class HeldMotor:
+    def __init__(self, mid, angle):
+        self.mid = mid
+        self.angle = float(angle)
+
+    def send_mit(self, *args):
+        pass
+
+    def get_state(self):
+        return SimpleNamespace(pos=self.angle, vel=0.0, torq=0.0, status_code=0, t_mos=math.nan)
+
+    def robstride_get_param_f32(self, param, timeout_ms=1000):
+        if param == POSITION_PARAM:
+            return self.angle
+        raise ValueError("this joint has no motor")
+
+    def robstride_write_param_f32(self, *args):
+        pass
+
+    def robstride_ping_host_id(self, *args):
+        return self.mid, 0
+
+    def robstride_get_fault_report(self):
+        return 0, 0
+
+    def clear_error(self):
+        pass
+
+    def enable(self):
+        pass
+
+    def disable(self):
+        pass
+
+    def ensure_mode(self, *args):
+        pass
+
+    def close(self):
+        pass
+
+
 class Arm:
     def __init__(self, name, channel, gravity=None, controller_factory=None, motors=None):
         self.name = name
         self.motor_list = H.motor_list(motors)
+        self.without = set()
+        self.held = []
         self.models = [model for _, model in self.motor_list[:6]]
         self.peak = np.array([C.PEAK_NM[model] for _, model in self.motor_list])
         self.rated = np.array([C.RATED_NM[model] for _, model in self.motor_list])
@@ -71,6 +123,8 @@ class Arm:
         self.connected = False
         self.torque = False
         self.has_gripper = True
+        self.gripper_memory = None
+        self.joint_memory = None
         self.spare = None
         self.answering = []
         self.codes = [None] * 7
@@ -99,15 +153,25 @@ class Arm:
         self.effort = np.zeros(7)
         self.temperatures = [None] * 7
         self.torque_limits = [None] * 7
+        self.voltage = [None, None]
+        self.voltage_low = [None, None]
+        self.voltage_turn = 0
+        self.voltage_retry = 0.0
+        self.voltage_lock = threading.Lock()
         self.command = np.zeros(7)
         self.rate = np.zeros(7)
         self.target = np.zeros(7)
         self.tau = np.zeros(7)
         self.trajectory = None
         self.trajectory_start = 0.0
+        self.glide_goal = None
+        self.glide_left = 0.0
+        self.glide_at = None
         self.gripper_closed = math.radians(C.GRIPPER_CLOSED_DEG)
         self.gripper_open = math.radians(C.GRIPPER_OPEN_DEG)
         self.gripper_stalled = False
+        self.gripper_pushing = 0.0
+        self.grip_strength = 1.0
         self.fault = None
         self.cooling = False
         self.home_q = None
@@ -171,10 +235,12 @@ class Arm:
         if answering != self.answering:
             self._log(f"motors answering {answering}")
         self.answering = answering
-        no_gripper = answering == [m for m, _ in self.motor_list[:6]]
-        if len(answering) < len(self.motor_list) and not no_gripper:
+        held = sorted(i for i in self.without & HELDABLE if self.motor_list[i][0] not in answering and answering)
+        present = [m for i, (m, _) in enumerate(self.motor_list) if m in answering or i in held]
+        no_gripper = present == [m for m, _ in self.motor_list[:6]]
+        if len(present) < len(self.motor_list) and not no_gripper:
             self._shut(controller, motors)
-            missing = [m for m, _ in self.motor_list if m not in answering]
+            missing = [m for m, _ in self.motor_list if m not in present]
             if not answering:
                 self.note = f"No motors answer on {self.channel}; is the arm power on?"
             else:
@@ -182,7 +248,12 @@ class Arm:
             return False
         if no_gripper:
             self._log("running without the gripper")
+        for index in held:
+            memory = self.joint_memory[index] if self.joint_memory is not None else 0.0
+            motors[index] = HeldMotor(self.motor_list[index][0], memory)
+            self._log(f"running without joint {index + 1}: its motor does not answer, so it is held at {math.degrees(memory):.0f} deg and never moved")
         with self.lock:
+            self.held = held
             self.controller = controller
             self.motors = motors[:6] if no_gripper else motors
             self.spare = motors[6] if no_gripper else None
@@ -437,31 +508,42 @@ class Arm:
             return False
 
     def _known(self):
-        return self.measured[:6].copy() if self.position_known else None
+        return self.measured.copy() if self.position_known else None
 
     def _wrap_offsets(self, raw, previous=None):
         offsets = np.zeros(7)
+        near = previous if previous is not None else self.joint_memory
         for index in range(6):
             low, high = LOWER[index] - SLACK, UPPER[index] + SLACK
             fits = [turn for turn in (0.0, 2 * math.pi, -2 * math.pi, 4 * math.pi, -4 * math.pi) if low <= raw[index] + turn <= high]
             if not fits:
                 continue
-            if previous is not None and len(fits) > 1:
-                offsets[index] = min(fits, key=lambda turn: abs(raw[index] + turn - previous[index]))
+            if near is not None and len(fits) > 1:
+                offsets[index] = min(fits, key=lambda turn: abs(raw[index] + turn - near[index]))
             else:
                 offsets[index] = fits[0]
-        low = min(self.gripper_closed, self.gripper_open) - math.radians(30)
-        high = max(self.gripper_closed, self.gripper_open) + math.radians(30)
-        if not low <= raw[6] <= high:
-            for turn in (2 * math.pi, -2 * math.pi):
-                if low <= raw[6] + turn <= high:
-                    offsets[6] = turn
-                    break
+        closed, opened = min(self.gripper_closed, self.gripper_open), max(self.gripper_closed, self.gripper_open)
+        below = math.radians(GRIPPER_BELOW_CLOSED_DEG)
+        turns = (0.0, 2 * math.pi, -2 * math.pi)
+        wide = [turn for turn in turns if closed - below <= raw[6] + turn <= opened + math.radians(GRIPPER_PAST_OPEN_DEG)]
+        travel = [turn for turn in wide if raw[6] + turn <= opened + math.radians(GRIPPER_PAST_OPEN_SURE_DEG)]
+        last = previous[6] if previous is not None and len(previous) > 6 else self.gripper_memory
+        near = [turn for turn in wide if last is not None and abs(raw[6] + turn - last) <= math.radians(GRIPPER_TRUST_DEG)]
+        if len(wide) == 1:
+            offsets[6] = wide[0]
+        elif near:
+            offsets[6] = min(near, key=lambda turn: abs(raw[6] + turn - last))
+        elif travel:
+            offsets[6] = travel[0]
+        elif wide:
+            offsets[6] = wide[0]
+        elif last is not None:
+            offsets[6] = min(turns, key=lambda turn: abs(raw[6] + turn - last))
         return offsets
 
     def _follow(self, index, raw):
         value = raw + self.offset[index]
-        if index >= 6 or not self.position_known:
+        if not self.position_known:
             return value
         turns = round((self.measured[index] - value) / (2 * math.pi))
         if not turns:
@@ -469,7 +551,8 @@ class Arm:
         shift = turns * 2 * math.pi
         self.offset[index] += shift
         self.turn_fixes += 1
-        self._log(f"joint {index + 1} reading jumped {math.degrees(-shift):+.0f} deg in one sample; treating it as the same position ({math.degrees(value):.0f} is {math.degrees(value + shift):.0f})")
+        label = "gripper" if index == 6 else f"joint {index + 1}"
+        self._log(f"{label} reading jumped {math.degrees(-shift):+.0f} deg in one sample; treating it as the same position ({math.degrees(value):.0f} is {math.degrees(value + shift):.0f})")
         return value + shift
 
     def read_positions(self, follow=True):
@@ -495,6 +578,41 @@ class Arm:
             self.note = f"Lost the arm on {self.channel}: {error}"
             self.close()
             return self.measured.copy()
+
+    def read_voltage(self):
+        if not self.torque or time.monotonic() < self.voltage_retry:
+            return None
+        with self.lock:
+            motors = [m for m in self.motors[:6] if not isinstance(m, HeldMotor)]
+        if not motors:
+            return None
+        self.voltage_turn += 1
+        end = self.voltage_turn % 2
+        try:
+            value = float(motors[-1 if end else 0].robstride_get_param_f32(VOLTAGE_PARAM, C.VOLTAGE_TIMEOUT_MS))
+        except Exception:
+            value = math.nan
+        low, high = C.VOLTAGE_RANGE_V
+        with self.voltage_lock:
+            if not low <= value <= high:
+                self.voltage[end] = None
+                self.voltage_retry = time.monotonic() + C.VOLTAGE_RETRY_S
+                return None
+            self.voltage[end] = value
+            self.voltage_low[end] = value if self.voltage_low[end] is None else min(self.voltage_low[end], value)
+        return value
+
+    def supply(self, restart=False):
+        with self.voltage_lock:
+            now, low = list(self.voltage), list(self.voltage_low)
+            if restart:
+                self.voltage_low = list(self.voltage)
+        return now, low
+
+    def _forget_voltage(self):
+        with self.voltage_lock:
+            self.voltage = [None, None]
+            self.voltage_low = [None, None]
 
     def _raise_torque_limits(self):
         for index, ((_, model), motor) in enumerate(zip(self.motor_list, self.motors)):
@@ -554,15 +672,40 @@ class Arm:
             self.resting = False
             self.catches = []
             self.gripper_stalled = False
+            self.gripper_pushing = 0.0
             for motor, position, offset, (kp, kd) in zip(self.motors, q, self.offset, C.GAINS):
                 motor.send_mit(float(position - offset), 0.0, kp, kd, 0.0)
-            self.controller.enable_all()
+            try:
+                self._motors_on()
+            except Exception:
+                self._motors_off()
+                raise
             self.torque = True
             self.feedback_at = time.monotonic()
         self._log("torque on")
         self.running.set()
         self.thread = threading.Thread(target=self._loop, name=f"arm-{self.name}", daemon=True)
         self.thread.start()
+
+    def _motors_on(self):
+        if self.has_gripper and not self.held:
+            self.controller.enable_all()
+            return
+        for motor in self.motors:
+            motor.enable()
+
+    def _motors_off(self):
+        if self.has_gripper and not self.held:
+            try:
+                self.controller.disable_all()
+                return
+            except Exception:
+                pass
+        for motor in self.motors:
+            try:
+                motor.disable()
+            except Exception:
+                pass
 
     def disable(self):
         if self.torque:
@@ -574,13 +717,11 @@ class Arm:
         self.thread = None
         with self.lock:
             if self.controller is not None and self.torque:
-                try:
-                    self.controller.disable_all()
-                except Exception:
-                    pass
+                self._motors_off()
             self.torque = False
             self.trajectory = None
             self.rate = np.zeros(7)
+        self._forget_voltage()
 
     def close(self):
         if self.connected:
@@ -649,7 +790,19 @@ class Arm:
                 q = points[i - 1] + (points[i] - points[i - 1]) * u
                 self.rate[:6] = (q - self.command[:6]) / dt
                 self.command[:6] = q
+            self.glide_goal = None
         else:
+            if self.glide_goal is not None:
+                if not np.array_equal(self.target[:6], self.glide_at):
+                    self.glide_goal = None
+                else:
+                    if self.glide_left > dt:
+                        self.target[:6] += (self.glide_goal - self.target[:6]) * (dt / self.glide_left)
+                        self.glide_left -= dt
+                    else:
+                        self.target[:6] = self.glide_goal
+                        self.glide_left = 0.0
+                    self.glide_at = self.target[:6].copy()
             error = self.target[:6] - self.command[:6]
             desired = np.clip(error / C.SERVO_TAU_S, -SERVO_MAX[:6], SERVO_MAX[:6])
             self.rate[:6] += np.clip(desired - self.rate[:6], -SERVO_ACCEL * dt, SERVO_ACCEL * dt)
@@ -657,19 +810,34 @@ class Arm:
             overshoot = (np.abs(step) > np.abs(error)) & (np.sign(step) == np.sign(error))
             self.command[:6] = np.where(overshoot, self.target[:6], self.command[:6] + step)
             self.rate[:6] = np.where(overshoot | (np.abs(error) < 1e-5), 0.0, self.rate[:6])
+        for index in self.held:
+            self.command[index] = self.target[index] = self.measured[index]
+            self.rate[index] = 0.0
         self._limit_push(dt)
         error = self.target[6] - self.command[6]
-        step = float(np.clip(error, -SERVO_MAX[6] * dt, SERVO_MAX[6] * dt))
+        closing = error * (self.gripper_closed - self.gripper_open) > 0
+        strength = self.grip_strength if closing else 1.0
+        slow = C.GRIP_SLOW_FLOOR + (1.0 - C.GRIP_SLOW_FLOOR) * strength
+        speed = SERVO_MAX[6] * slow
+        step = float(np.clip(error, -speed * dt, speed * dt))
         self.command[6] += step
         self.rate[6] = step / dt
         lead = self.command[6] - self.measured[6]
-        limit = GRIPPER_HOLD_LEAD if self.gripper_stalled else GRIPPER_LEAD
+        hold = GRIPPER_HOLD_LEAD * strength
+        peak = GRIPPER_LEAD * slow
+        limit = hold if self.gripper_stalled else peak
         if abs(lead) > limit:
-            self.gripper_stalled = True
-            self.command[6] = self.measured[6] + math.copysign(GRIPPER_HOLD_LEAD, lead)
+            self.command[6] = self.measured[6] + math.copysign(limit, lead)
             self.rate[6] = 0.0
-        elif abs(self.target[6] - self.command[6]) > GRIPPER_HOLD_LEAD * 2:
-            self.gripper_stalled = False
+            if not self.gripper_stalled:
+                self.gripper_pushing += dt
+                if self.gripper_pushing >= C.GRIPPER_STALL_S:
+                    self.gripper_stalled = True
+                    self.command[6] = self.measured[6] + math.copysign(hold, lead)
+        else:
+            self.gripper_pushing = 0.0
+            if abs(self.target[6] - self.command[6]) > GRIPPER_HOLD_LEAD * 2:
+                self.gripper_stalled = False
 
     def _limit_push(self, dt):
         if not self.feedback_at:
@@ -769,6 +937,8 @@ class Arm:
             return False
         speed = math.radians(speed_deg_s or C.COOL_HOME_DEG_S)
         points = np.clip(np.asarray(path, dtype=float)[:, :6], self.lower, self.upper)
+        for index in self.held:
+            points[:, index] = self.command[index]
         times = [0.0]
         for a, b in zip(points[:-1], points[1:]):
             times.append(times[-1] + max(0.02, float(np.max(np.abs(b - a))) / speed))
@@ -779,6 +949,8 @@ class Arm:
 
     def _plan(self, goal, speed_deg_s):
         goal = np.clip(np.asarray(goal, dtype=float)[:6], self.lower, self.upper)
+        for index in self.held:
+            goal[index] = self.command[index]
         self.rate[:] = 0.0
         samples = min_jerk(self.command[:6], goal, math.radians(speed_deg_s), math.radians(speed_deg_s * 6), 0.01)
         self.trajectory = (np.array([t for t, _ in samples]), np.array([q for _, q in samples]))
@@ -802,13 +974,20 @@ class Arm:
         if self.fault:
             raise ValueError(self.fault)
 
-    def servo(self, q):
+    def servo(self, q, glide_s=0.0, fresh=True):
         q = np.clip(np.asarray(q, dtype=float)[:6], self.lower, self.upper)
         with self.lock:
             self._check()
             if self.trajectory is not None:
                 self.trajectory = None
-            self.target[:6] = q
+            if glide_s <= 0.0:
+                self.glide_goal = None
+                self.target[:6] = q
+                return
+            if fresh or self.glide_goal is None or not np.array_equal(self.target[:6], self.glide_at):
+                self.glide_left = float(glide_s)
+            self.glide_goal = q
+            self.glide_at = self.target[:6].copy()
 
     def play(self, samples):
         self._check()
@@ -824,6 +1003,8 @@ class Arm:
     def move(self, q, speed_deg_s=C.MOVE_DEG_S, accel_deg_s2=C.MOVE_DEG_S2):
         start = self.command[:6].copy() if self.torque else self.measured[:6].copy()
         goal = np.clip(np.asarray(q, dtype=float)[:6], self.lower, self.upper)
+        for index in self.held:
+            goal[index] = start[index]
         samples = min_jerk(start, goal, math.radians(speed_deg_s), math.radians(accel_deg_s2), 0.01)
         return self.play(samples)
 
@@ -841,6 +1022,13 @@ class Arm:
         span = self.gripper_open - self.gripper_closed
         return float(np.clip((self.measured[6] - self.gripper_closed) / span, 0, 1) * C.GRIPPER_WIDTH_M) if span else 0.0
 
+    @property
+    def width_goal(self):
+        span = self.gripper_open - self.gripper_closed
+        if not self.torque or not span:
+            return self.width
+        return float(np.clip((self.target[6] - self.gripper_closed) / span, 0, 1) * C.GRIPPER_WIDTH_M)
+
     def grip(self, width):
         with self.lock:
             self._check()
@@ -849,7 +1037,20 @@ class Arm:
             goal = self.width_to_angle(width)
             if abs(goal - self.target[6]) > GRIPPER_HOLD_LEAD:
                 self.gripper_stalled = False
+                self.gripper_pushing = 0.0
             self.target[6] = goal
+
+    def set_grip_strength(self, strength):
+        with self.lock:
+            self.grip_strength = float(min(max(float(strength), C.GRIP_MIN), 1.0))
+            self.gripper_stalled = False
+            self.gripper_pushing = 0.0
+        return self.grip_strength
+
+    @property
+    def gripping(self):
+        squeeze = (self.command[6] - self.measured[6]) * (self.gripper_closed - self.gripper_open)
+        return bool(self.torque and self.has_gripper and self.gripper_stalled and squeeze > 0)
 
     def set_gripper_range(self, closed, opened):
         if abs(opened - closed) < math.radians(10):
@@ -876,6 +1077,12 @@ class Arm:
         self._reset_motors()
         self._end_rest()
 
+    def _held_note(self):
+        if not (self.connected and self.held):
+            return None
+        joints = " and ".join(str(i + 1) for i in self.held)
+        return f"Running without joint {joints}: its motor does not answer, so that joint stays where it is"
+
     @property
     def q(self):
         return self.measured[:6].copy()
@@ -886,7 +1093,7 @@ class Arm:
             warm = [(i + 1, t) for i, t in enumerate(self.temperatures) if t is not None and t >= C.TEMPERATURE_WARN_C]
             return {
                 "name": self.name, "channel": self.channel, "connected": self.connected, "powered": self.torque,
-                "motors_answering": list(self.answering), "fault": self.fault, "cooling": self.cooling, "note": self.note,
+                "motors_answering": list(self.answering), "fault": self.fault, "cooling": self.cooling, "note": self.note or self._held_note(),
                 "alert": self._alert(), "alert_tags": self._alert_tags(), "has_gripper": self.has_gripper, "resting": self.resting,
                 "heat": self.heat.summary() if self.torque else None, "rest": self.rest_status(), "motors": list(self.models),
                 "load_nm": [round(float(v), 1) for v in np.sqrt(self.load2[:6])], "rated_nm": self.rated[:6].tolist(), "hold_nm": self.continuous.tolist(),
@@ -896,8 +1103,11 @@ class Arm:
                 "effort_nm": [round(float(v), 2) for v in self.effort[:6]],
                 "gravity_nm": [round(float(v), 2) for v in self.tau[:6]],
                 "temperatures_c": list(self.temperatures), "torque_limits_nm": list(self.torque_limits),
+                "supply_v": [None if v is None else round(v, 1) for v in self.voltage],
                 "warm": (f"Joint {max(warm, key=lambda w: w[1])[0]} at {max(warm, key=lambda w: w[1])[1]:.0f} C" if warm else None),
                 "gripper_deg": round(math.degrees(self.measured[6]), 1), "gripper_m": round(self.width, 4),
                 "gripper_range_deg": [round(math.degrees(self.gripper_closed), 1), round(math.degrees(self.gripper_open), 1)],
+                "gripping": self.gripping, "grip_strength": round(self.grip_strength, 2),
+                "grip_nm": round(abs(float(self.command[6] - self.measured[6])) * C.GAINS[6][0], 2) if self.torque else 0.0,
                 "busy": self.trajectory is not None, "loop_hz": round(self.loop_hz), "feedback_age_ms": None if age is None else round(age * 1000),
             }

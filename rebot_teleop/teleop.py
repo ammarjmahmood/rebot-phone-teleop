@@ -42,6 +42,8 @@ class Hand:
         self.reach_error = 0.0
         self.last_width = None
         self.velocity = None
+        self.sample_at = None
+        self.gap = 1.0 / 72.0
         self.guarded = False
 
 
@@ -53,6 +55,7 @@ class Teleop:
         self.hands = {name: Hand(name) for name in robot.units}
         self.active = False
         self.source = None
+        self.yield_to = lambda: False
         self.settings = C.load("teleop.json", {"view": "behind", "scale": 1.0, "rotation": True, "follow_gaze": True})
         self.started_at = 0.0
         self.loop_hz = 0.0
@@ -90,6 +93,7 @@ class Teleop:
             for hand in self.hands.values():
                 hand.engaged = False
                 hand.reference = None
+                hand.last_width = None
         return {"active": True, "source": source, "powered": powered, "offline": [n for n in self.robot.units if n not in powered]}
 
     def stop(self):
@@ -192,6 +196,11 @@ class Teleop:
     def _step(self, now, dt):
         with self.lock:
             self.pending = False
+        if self.yield_to():
+            for hand in self.hands.values():
+                hand.engaged = False
+                hand.last_width = None
+            return
         for name, hand in self.hands.items():
             unit = self.robot.units[name]
             arm = unit.arm
@@ -201,6 +210,7 @@ class Teleop:
             fresh = sample is not None and now - sample["at"] < FRESH_S
             if not unit.ready:
                 hand.engaged = False
+                hand.last_width = None
                 continue
             if fresh:
                 width = C.GRIPPER_WIDTH_M * (1.0 - float(np.clip(sample["trigger"], 0.0, 1.0)))
@@ -234,8 +244,13 @@ class Teleop:
             q = self._guard(unit, hand, goal_p, goal_r, q)
             hand.solution = q
             hand.reach_error = err
+            new = sample["at"] != hand.sample_at
+            if new:
+                if hand.sample_at is not None and 0.0 < sample["at"] - hand.sample_at < 0.1:
+                    hand.gap += 0.2 * (sample["at"] - hand.sample_at - hand.gap)
+                hand.sample_at = sample["at"]
             try:
-                arm.servo(q)
+                arm.servo(q, min(C.TELEOP_GLIDE_FRAMES * hand.gap, C.TELEOP_GLIDE_MAX_S), fresh=new)
             except ValueError:
                 hand.engaged = False
 
@@ -244,12 +259,14 @@ class Teleop:
         if self.robot.heavy:
             hand.guarded = False
             return q
-        watch = [j for j in range(6) if arm.heat.used[j] >= C.REACH_GUARD_AT]
+        loaded = unit.payload_kg > 0
+        tired = arm.heat.used >= C.REACH_GUARD_AT
+        watch = [j for j in range(6) if loaded or tired[j]]
         if not watch:
             hand.guarded = False
             return q
         now = np.abs(unit.load_at(arm.command[:6]))
-        limit = np.maximum(arm.continuous, now)
+        limit = np.maximum(np.where(tired, arm.continuous, unit.reach_limit), now)
 
         def ok(candidate):
             load = np.abs(unit.load_at(candidate))
@@ -285,7 +302,7 @@ class Teleop:
         hand.solution = q
         hand.reach_error = err
         try:
-            arm.servo(q)
+            arm.servo(q, min(C.TELEOP_GLIDE_FRAMES * dt, C.TELEOP_GLIDE_MAX_S))
         except ValueError:
             hand.engaged = False
 

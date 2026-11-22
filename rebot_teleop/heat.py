@@ -40,6 +40,17 @@ def seconds_at(table, torque):
     return last_s * (last_t / torque) ** 2
 
 
+def torque_for(table, seconds):
+    low, high = table[0][0], table[-1][0]
+    for _ in range(40):
+        mid = (low + high) / 2
+        if seconds_at(table, mid) > seconds:
+            low = mid
+        else:
+            high = mid
+    return low
+
+
 def heat_rate(model, torque, speed_deg_s):
     moving = min(abs(float(speed_deg_s)) / C.HEAT_MOVING_DEG_S, 1.0)
     rate = (1.0 - moving) / seconds_at(TABLES[model]["still"], torque) + moving / seconds_at(TABLES[model]["moving"], torque)

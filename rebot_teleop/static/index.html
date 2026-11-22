@@ -12,7 +12,7 @@
   <nav id="tabs">
     <button data-tab="home" class="on">Home</button>
     <button data-tab="teleop">Teleop</button>
-    <button data-tab="seq">Sequencer</button>
+    <button data-tab="seq">Record</button>
     <button data-tab="policy">Policy</button>
   </nav>
   <div id="pills"></div>
@@ -41,6 +41,7 @@
         <button class="go" id="hold-here" title="Stops any motion and holds every connected arm exactly where it is now">Hold here</button>
         <button class="small" id="motor-report" title="Which poses used each joint's budget most and least over the last day, with the joint angles of every relax or fault">Motor report</button>
         <label class="heavy-toggle" title="Lets the arms go to and hold heavy poses: no reach limit in teleop, no rests or refusals in sequences, and the arm only relaxes itself at 95% of the budget. The timer still shows"><input type="checkbox" class="heavy-switch"> Heavy poses</label>
+        <label class="grip-toggle" title="How hard the grippers squeeze once the fingers meet something. Lower closes slower and holds lighter, for soft or fragile things. 100 is full strength">Grip <input type="range" class="grip-slider" min="10" max="100" step="10" value="100"> <span class="grip-value">100%</span></label>
         <button class="go" id="power-all">Power on both</button>
         <button class="go" id="power-left">Power on left</button>
         <button class="go" id="power-right">Power on right</button>
@@ -86,6 +87,7 @@
       <div class="muted small-text">Bookmark: <a id="gist-link" target="_blank">GitHub gist</a> <span id="gist-status"></span></div>
       <div class="buttons">
         <label class="heavy-toggle" title="No reach limit: the arm follows your hand all the way out and only relaxes at 95% of the budget"><input type="checkbox" class="heavy-switch"> Heavy poses</label>
+        <label class="grip-toggle" title="How hard the grippers squeeze once the fingers meet something. Lower closes slower and holds lighter, for soft or fragile things. 100 is full strength">Grip <input type="range" class="grip-slider" min="10" max="100" step="10" value="100"> <span class="grip-value">100%</span></label>
         <button class="go" id="tele-start">Ready arms for teleop</button>
         <button id="tele-stop">End teleop</button>
         <button id="tele-record" class="danger">Record teleop</button>
@@ -110,36 +112,46 @@
 <section id="tab-seq" class="tab">
   <div class="row top">
     <div class="panel seq-list">
-      <div class="panel-head"><b>Sequences</b><span class="grow"></span><button class="small" id="seq-new">New</button></div>
+      <div class="panel-head"><b>Recordings</b><span class="grow"></span><button class="small" id="seq-new">New</button></div>
       <div id="seq-items"></div>
     </div>
-    <div class="panel grow2">
+    <div class="panel grow2 seq-editor">
       <div class="panel-head">
-        <input id="seq-name" class="title-input" placeholder="Sequence name">
+        <input id="seq-name" class="title-input" placeholder="Name of this recording" title="Click to rename">
         <span class="grow"></span>
-        <div class="toggle" id="seq-mode"><button data-mode="point" class="on">Go to point</button><button data-mode="record">Record motion</button></div>
-      </div>
-      <div class="buttons">
         <label>Arms <select id="seq-arm"><option value="">Both</option><option value="left">Left</option><option value="right">Right</option></select></label>
-        <span id="seq-point-tools"><button class="go" id="seq-capture">Save point</button>
-        <label>Speed <input id="seq-step-speed" type="number" value="90" min="5" max="180" step="5"> deg/s</label></span>
-        <span id="seq-record-tools" hidden><button class="rec" id="seq-record">Start recording</button><span id="seq-rec-note" class="muted"></span></span>
+      </div>
+      <div class="seq-add">
+        <button class="go big" id="seq-capture" title="Adds where the arms and grippers are right now as a point to go to">Save point</button>
+        <button class="rec big" id="seq-record" title="Records how the arms move until you press it again">Record motion</button>
+        <label title="On: the arms switch off when the recording starts so you can move them by hand, and stay off when it ends. Off: the arms stay as they are, for recording teleop"><input type="checkbox" id="seq-byhand" checked> by hand</label>
+        <span class="sep"></span>
+        <span class="seq-group"><span class="muted">Gripper</span>
+        <button class="big" id="seq-open" title="Opens the gripper now and adds that as a step">Open</button>
+        <button class="big" id="seq-close" title="Closes the gripper now and adds that as a step">Close</button></span>
         <span class="sep"></span>
         <button class="small" id="seq-add-wait">+ Wait</button>
-        <button class="small" id="seq-add-open">+ Open gripper</button>
-        <button class="small" id="seq-add-close">+ Close gripper</button>
         <button class="small" id="seq-add-lift">+ Table lift</button>
       </div>
-      <p class="muted small-text" id="seq-hint">Move the arms with teleop, or power an arm off and move it by hand, then Save point. Record motion captures the real trajectory at 50 Hz.</p>
+      <div id="seq-banner" hidden></div>
+      <p class="muted small-text" id="seq-hint">Move the arms with teleop, or power an arm off and move it by hand. Press Save point at each place you want it to go, or Record motion to copy a whole movement; with by hand ticked the arms switch off for it so you can move them yourself. Open and Close move the gripper now and add that step. Then press Play.</p>
       <ol id="seq-steps"></ol>
       <div id="seq-plan" class="small-text"></div>
       <div class="buttons play">
-        <button class="go" id="seq-play">Play</button>
-        <label><input type="checkbox" id="seq-loop"> Loop</label>
+        <button class="go big" id="seq-play">Play</button>
+        <button class="big" id="seq-stop">Stop</button>
+        <label><input type="checkbox" id="seq-loop"> Repeat</label>
+        <label title="When a playback finishes on its own, the arms that played it power off. Stop or a problem keeps them powered and holding"><input type="checkbox" id="seq-poweroff" checked> Power off when done</label>
         <label>Speed <input id="seq-speed" type="range" min="0.25" max="2" step="0.05" value="1"><span id="seq-speed-v">1.00x</span></label>
-        <button id="seq-stop">Stop</button>
+        <label title="How much recorded motions are smoothed when they play. More is smoother but follows the recording a little less closely">Smooth <input id="seq-smooth" type="range" min="0.05" max="0.5" step="0.05" value="0.2"><span id="seq-smooth-v">0.20 s</span></label>
         <span class="grow"></span>
-        <button class="small danger" id="seq-delete">Delete sequence</button>
+        <button class="small danger" id="seq-delete">Delete recording</button>
+      </div>
+      <div class="buttons play together" title="Plays two motions at once: one moves the left arm, the other moves the right arm. Pick a whole recording, or one motion inside a recording. Record motion adds to the recording that is open, so press New first if you want it on its own">
+        <b>Both hands at once</b>
+        <label>Left <select id="seq-left"></select></label>
+        <label>Right <select id="seq-right"></select></label>
+        <button class="go big" id="seq-both">Play both</button>
       </div>
       <div id="seq-progress" class="mono"></div>
       <div id="seq-safety" class="small-text"></div>

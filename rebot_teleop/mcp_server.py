@@ -4,7 +4,7 @@ import logging
 from mcp.server.mcpserver import Image, MCPServer
 from rebot_teleop.agent import API, Robot, RobotError, run_code
 
-INSTRUCTIONS = """You drive a real two armed reBot (two Seeed B601 RS arms on the sides of a post, a head depth camera, a camera on each wrist, a motorised table lift).
+INSTRUCTIONS = """You drive a real two armed reBot (two Seeed B601 RS arms standing upright on a shelf in front of a post, a head depth camera, a camera on each wrist, a motorised table lift).
 Work like Code as Policies: call look_all to see every camera and both arms, write a short Python policy against the robot API and run it with run_policy, then look_all again to check.
 Batch several moves into one policy. Moves are smooth and never refused: an out of reach target goes as close as it can and the result says how far off it was.
 power_on holds the arm still where it is. The arms work on their own sides (left arm y > 0, right arm y < 0).
@@ -117,7 +117,7 @@ async def run_policy(code: str, timeout_s: float = 180.0) -> str:
     return ("" if result["ok"] else "[policy failed] ") + result["output"]
 
 
-@server.tool(description="List the motion sequences saved in the dashboard Sequencer tab")
+@server.tool(description="List the motion sequences saved in the dashboard Record tab")
 def list_sequences() -> str:
     return guarded(robot()._call, "GET", "/api/seq")
 

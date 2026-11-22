@@ -25,16 +25,25 @@ GAINS = ((120.0, 4.0), (110.0, 4.0), (100.0, 4.0), (40.0, 1.5), (35.0, 1.2), (30
 
 LOOP_HZ = 200.0
 SERVO_TAU_S = 0.025
+TELEOP_GLIDE_FRAMES = 1.5
+TELEOP_GLIDE_MAX_S = 0.05
 SERVO_MAX_DEG_S = (240.0, 240.0, 270.0, 360.0, 360.0, 420.0)
 SERVO_MAX_DEG_S2 = 3600.0
 MOVE_DEG_S = 90.0
 MOVE_DEG_S2 = 360.0
+HOME_BUTTON_DEG_S = 45.0
 GRIPPER_DEG_S = 400.0
 GRIPPER_OPEN_DEG = 270.0
 GRIPPER_CLOSED_DEG = 0.0
 GRIPPER_WIDTH_M = 0.05
 GRIPPER_LEAD_DEG = 18.0
 GRIPPER_HOLD_LEAD_DEG = 5.0
+GRIP_MIN = 0.1
+GRIP_SLOW_FLOOR = 0.2
+GRIPPER_STALL_S = 0.06
+MJPEG_FPS = float(os.environ.get("REBOT_MJPEG_FPS", "8"))
+MJPEG_VR_FPS = float(os.environ.get("REBOT_MJPEG_VR_FPS", "15"))
+MJPEG_QUALITY = int(os.environ.get("REBOT_MJPEG_QUALITY", "60"))
 
 TEMPERATURE_WARN_C = float(os.environ.get("REBOT_TELEOP_TEMPERATURE_WARN", "75"))
 TEMPERATURE_LIMIT_C = float(os.environ.get("REBOT_TELEOP_TEMPERATURE_LIMIT", "95"))
@@ -56,9 +65,15 @@ HEAT_MODEL_MARGIN = 1.15
 REST_TIMEOUT_S = 600.0
 MOTORLOG_HZ = 5.0
 REACH_GUARD_AT = 0.5
+REACH_HOLD_MIN_S = 60.0
+PAYLOAD_MAX_KG = 3.0
 TABLE_DEFAULT = {"top": 0.68, "front": None, "clearance": 0.01}
 TABLE_POINTS = (("gripper_end", 0.0), ("gripper_left", 0.01), ("gripper_right", 0.01), ("link6", 0.04), ("link5", 0.04), ("link4", 0.04))
 MOTORLOG_KEEP_DAYS = 14
+VOLTAGE_HZ = float(os.environ.get("REBOT_TELEOP_VOLTAGE_HZ", "0"))
+VOLTAGE_TIMEOUT_MS = 20
+VOLTAGE_RETRY_S = 2.0
+VOLTAGE_RANGE_V = (6.0, 80.0)
 REST_COMES_BACK = False
 RELIEF_X = 0.12
 RELIEF_STOP_FRACTION = 0.6
@@ -109,3 +124,17 @@ def save(name, value):
 
 def radians(values):
     return [math.radians(v) for v in values]
+
+
+def pose_numbers(pose, name):
+    return [0.0 if v is None else float(v) for v in POSES_DEG[pose][name]]
+
+
+LAYOUT = load("layout.json", {})
+MOUNTS.update(LAYOUT.get("mounts", {}))
+for _pose, _arms in LAYOUT.get("poses", {}).items():
+    POSES_DEG.setdefault(_pose, {}).update(_arms)
+RELIEF_X = float(LAYOUT.get("relief_x", RELIEF_X))
+POST_TOP_M = float(LAYOUT.get("post_top", POST_TOP_M))
+HEAD_XYZ = list(LAYOUT.get("head_xyz", [0.0, 0.0, POST_TOP_M]))
+HEAD_POSE = LAYOUT.get("head_pose", HEAD_POSE)

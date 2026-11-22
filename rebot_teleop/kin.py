@@ -127,6 +127,11 @@ class Kinematics:
         current = data.oMf[self.tip]
         return q[self.indices].copy(), float(np.linalg.norm(target.translation - current.translation)), float(np.linalg.norm(pin.log3(target.rotation @ current.rotation.T)))
 
+    def payload_torque(self, q, kg):
+        data = self.model.createData()
+        jacobian = pin.computeFrameJacobian(self.model, data, self.configuration(q), self.tip, pin.ReferenceFrame.LOCAL_WORLD_ALIGNED)[:3, self.indices]
+        return jacobian.T @ np.array([0.0, 0.0, 9.81 * float(kg)])
+
     def gravity_function(self):
         model = self.model
         data = model.createData()

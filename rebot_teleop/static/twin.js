@@ -65,6 +65,11 @@ export class Twin {
     const postMesh = new THREE.Mesh(new THREE.BoxGeometry(...post.size), new THREE.MeshStandardMaterial({ color: 0xf2f2f0, roughness: 0.7 }));
     postMesh.position.set(...post.center);
     this.scene.add(postMesh);
+    for (const item of scene.boxes || []) {
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(...item.size), new THREE.MeshStandardMaterial({ color: item.color || '#e07b1a', roughness: 0.7 }));
+      mesh.position.set(...item.center);
+      this.scene.add(mesh);
+    }
     for (const part of scene.body) {
       geometry(part.mesh).then(g => {
         const mesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: new THREE.Color(...part.rgba.slice(0, 3)), roughness: 0.6 }));

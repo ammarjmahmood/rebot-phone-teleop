@@ -19,14 +19,22 @@ State
   robot.motor_report(hours=24)       which poses used joint 1's budget most and least, and events with joint angles
   robot.table()                      table top height and how far its near edge is from the post (metres)
   robot.heavy(on)                    heavy poses switch: on lets moves use up a joint's budget, relaxing only at 95%
+  robot.payload(arm, kg)             say what the hand holds (0 when it lets go); reaches it could not hold for a minute are then refused
+  robot.weigh(arm)                   hold still in free air: estimates the weight in the hand from the shoulder motors and sets it
 
 Table: moves that would take the gripper or wrist into the table are refused with an error that says so;
 go up and over, then down. Every move returns load: the torque each joint will hold at the goal, and
 load_note when a joint would hold more than it can for long.
 
-Motor budget: the shoulder (joint 1) can hold about 8 Nm while still. Reaching far out uses it up in minutes,
-then the arm relaxes at home, recovers and goes back up by itself. Work fast, keep poses close in or low,
-and do not park with the arm stretched out. The hanging home pose costs almost nothing.
+Layout: both arms stand on a shelf in front of the post, bases about 14 cm above the table, 34 cm apart.
+The home pose is folded down on the shelf. Before working over the table call robot.go("ready") (arms upright),
+and call robot.go("home") when the job is done. Check robot.state() first: an arm whose note says it runs
+without its gripper can move but cannot grip, so pick with the other arm.
+
+Motor budget: joints 2 and 3 carry the arm. They can hold about 8 Nm while still; reaching far forward
+uses that up in a minute or two, then the arm pulls itself in to recover and carries on. Work fast, keep the
+hand within about 45 cm of the post when you can, and do not park stretched out. Holding still at home
+also costs joint 3 about 7 Nm, so do not leave the arms powered for long when idle.
   robot.tip(arm) -> np.array xyz     robot.joints(arm) -> degrees
 
 Power (holds still where the arm is; nothing moves)
@@ -44,10 +52,10 @@ Move (smooth, waits until done unless wait=False; speed in deg/s, default 90)
   robot.stop()                       holds every arm where it is
 
 Sequences and the table
-  robot.play(name, wait=True)        plays a sequence saved in the Sequencer tab
+  robot.play(name, wait=True)        plays a sequence saved in the Record tab
   robot.lift(action, seconds)        action up or down, then stops
 
-Cameras: "left", "right" (wrists), "head" (fixed HP60C with depth)
+Cameras: "left", "right" (wrists, for the close approach), "head" (fixed HP60C with depth, sees both arms and the table)
   robot.capture(camera) -> BGR numpy image
   robot.locate(camera, [[u, v], ...], plane_z=None) -> list of world xyz (head uses depth)
   robot.find_color(camera, "red" | "green" | "blue" | "yellow" | "orange") -> list of {pixel, xyz, area}
@@ -92,6 +100,12 @@ class Robot:
 
     def heavy(self, on=True):
         return self._call("POST", "/api/limits", {"heavy": bool(on)})
+
+    def payload(self, arm, kg):
+        return self._call("POST", "/api/payload", {"arm": arm, "kg": float(kg)})
+
+    def weigh(self, arm):
+        return self._call("POST", "/api/payload", {"arm": arm})
 
     def table(self):
         return self._call("GET", "/api/table")

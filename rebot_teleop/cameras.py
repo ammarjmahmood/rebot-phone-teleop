@@ -82,7 +82,7 @@ class UsbCamera:
                 image = frame if data is None or data[:2] != b"\xff\xd8" else cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
                 if self.rotate == 180:
                     image = cv2.rotate(image, cv2.ROTATE_180)
-                ok, encoded = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 75])
+                ok, encoded = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, C.MJPEG_QUALITY])
                 data = encoded.tobytes() if ok else None
             if data:
                 with self.lock:

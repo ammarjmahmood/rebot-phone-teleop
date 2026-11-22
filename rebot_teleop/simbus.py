@@ -24,6 +24,8 @@ class SimMotor:
             self.bus.step()
             if param == 0x700B:
                 return C.PEAK_NM["rs-06" if self.id <= 3 else "rs-00"]
+            if param == 0x701C:
+                return float(self.bus.voltage)
             return float(self.bus.pos[self.index])
 
     def robstride_write_param_f32(self, param, value):
@@ -36,7 +38,18 @@ class SimMotor:
         self.bus.codes.pop(self.id, None)
 
     def enable(self):
-        pass
+        if self.id in self.bus.dead:
+            raise TimeoutError("control ack timeout: comm_type=3")
+        with self.bus.lock:
+            self.bus.enabled = True
+            self.bus.at = time.monotonic()
+
+    def disable(self):
+        if self.id in self.bus.dead:
+            raise TimeoutError("control ack timeout: comm_type=4")
+        with self.bus.lock:
+            self.bus.enabled = False
+            self.bus.feedforward[:] = 0.0
 
     def robstride_get_fault_report(self):
         return 0, 0
@@ -69,6 +82,7 @@ class SimBus:
         self.at = time.monotonic()
         self.sent = 0
         self.temperature = 34.0
+        self.voltage = 48.0
         self.motors = []
 
     def step(self):
@@ -94,6 +108,8 @@ class SimBus:
         with self.lock:
             self.enabled = True
             self.at = time.monotonic()
+        if any(motor.id in self.dead for motor in self.motors):
+            raise TimeoutError("enable_all failed: control ack timeout: comm_type=3")
 
     def disable_all(self):
         with self.lock:

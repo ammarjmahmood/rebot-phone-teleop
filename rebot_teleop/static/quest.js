@@ -1,7 +1,7 @@
 const $ = id => document.getElementById(id);
 const CAMERAS = ['head', 'left', 'right'];
 let ws = null, session = null, refSpace = null, gl = null, panel = null;
-let cameraIndex = 0, panelOn = true, lastButtons = {}, gripWas = {}, lastStatus = {}, seq = 0, rtt = null, hud = null, hudDirty = true, pads = {}, budgetWas = {}, lastTeleop = {}, lastHeavy = false;
+let cameraIndex = 0, panelOn = true, lastButtons = {}, gripWas = {}, lastStatus = {}, seq = 0, rtt = null, hud = null, hudDirty = true, pads = {}, budgetWas = {}, lastTeleop = {}, lastHeavy = false, holdWas = {}, hudNote = null, aDownAt = null, aFired = false;
 
 function status(text) { $('status').textContent = text; }
 
@@ -17,16 +17,77 @@ function connect() {
     if (m.heavy !== undefined) lastHeavy = !!m.heavy;
     hudDirty = true;
     budgetAlerts(m.arms || {});
+    for (const [name, a] of Object.entries(m.arms || {})) { if (a.gripping && !holdWas[name]) pulse(pads[name], 0.8, 90); holdWas[name] = !!a.gripping; }
     if (m.type === 'status' && m.t) { rtt = Date.now() - m.t; const tl = m.teleop || {}; $('link').textContent = `Round trip ${rtt} ms, ${tl.input_hz || 0} frames/s, ${tl.dropped || 0} dropped`; }
     const chips = Object.entries(m.arms || {}).map(([n, a]) => `<span class="${a.ready && budgetLevel(a) === 'ok' ? 'ok' : 'warn'}">${n}: ${budgetText(a, n)}</span>`);
     $('arms').innerHTML = chips.join('');
     const faults = Object.entries(m.arms || {}).filter(([, a]) => a.fault).map(([n, a]) => `${n} arm: ${a.fault}`);
     if (faults.length) status(faults.join(' '));
     if (m.type === 'started' && m.offline && m.offline.length) status(`Ready with ${m.powered.join(' and ') || 'no arm'}. ${m.offline.join(' and ')} offline.`);
+    showPower();
+    if (m.enabled) enabledResult(m.enabled, m.arms || {});
+    if (m.home) homeResult(m.home);
   };
   ws.onclose = () => { status('Connection lost, reconnecting. The arms hold.'); setTimeout(connect, 500); };
 }
 connect();
+
+function needsEnable(a) { return !!a && (!a.connected || (!a.ready && !a.fault && !a.rest)); }
+
+function showPower() {
+  const names = Object.keys(lastStatus);
+  document.querySelectorAll('button.enable').forEach(b => b.classList.toggle('need', (b.dataset.arm ? [b.dataset.arm] : names).some(n => needsEnable(lastStatus[n]))));
+}
+
+function enableArms(arm) {
+  if (!ws || ws.readyState !== 1) { status('Not connected to the robot yet.'); return; }
+  ws.send(JSON.stringify({ type: 'enable', arm: arm || null }));
+  status(`Enabling ${arm ? 'the ' + arm + ' arm' : 'the arms'}...`);
+}
+
+function enabledResult(result, arms) {
+  const failed = result.asked.filter(n => !result.powered.includes(n));
+  const parts = [];
+  if (result.powered.length) parts.push(`${result.powered.join(' and ')} enabled, holding where ${result.powered.length > 1 ? 'they are' : 'it is'}.`);
+  for (const n of failed) parts.push(`${n} arm did not enable: ${(arms[n] && (arms[n].fault || arms[n].note)) || 'no answer'}`);
+  status(parts.join(' '));
+  for (const pad of Object.values(pads)) {
+    if (failed.length) { pulse(pad, 1.0, 80); setTimeout(() => pulse(pad, 1.0, 80), 160); }
+    else pulse(pad, 0.5, 60);
+  }
+}
+
+function note(text, ms) {
+  hudNote = { text, until: Date.now() + ms };
+  hudDirty = true;
+  setTimeout(() => { hudDirty = true; }, ms + 50);
+}
+
+function buzzAll(strength, ms, twice) {
+  for (const pad of Object.values(pads)) { pulse(pad, strength, ms); if (twice) setTimeout(() => pulse(pad, strength, ms), ms * 2); }
+}
+
+function goHome() {
+  if (!ws || ws.readyState !== 1) { status('Not connected to the robot yet.'); return; }
+  ws.send(JSON.stringify({ type: 'home' }));
+  status('Going home...');
+}
+
+function homeResult(result) {
+  if (result.error) {
+    status(result.error);
+    note(/grip/i.test(result.error) ? 'LET GO OF BOTH GRIPS' : /enable/i.test(result.error) ? 'NO ARM IS ENABLED' : 'HOME REFUSED, SEE PAGE', 3000);
+    buzzAll(1.0, 80, true);
+    return;
+  }
+  status(`${result.moving.join(' and ')} going home, about ${Math.max(1, Math.ceil(result.duration_s))} s. Squeeze a grip to take over.`);
+  note('GOING HOME', Math.max(1000, result.duration_s * 1000));
+  buzzAll(0.6, 120, false);
+}
+
+$('home').onclick = goHome;
+document.querySelectorAll('button.enable').forEach(b => b.onclick = () => enableArms(b.dataset.arm));
+setInterval(() => { if (!session && ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'status' })); }, 1000);
 
 function budgetLevel(a) {
   if (a.rest) return 'rest';
@@ -91,14 +152,15 @@ function drawHud() {
     x.fillRect(bx, by, bw * pct / 100, bh);
     x.fillStyle = '#e8eaed';
     x.font = '26px sans-serif';
-    x.fillText(budgetText(a, name), bx + bw + 14, y + rowH / 2);
+    x.fillText(budgetText(a, name) + (needsEnable(a) ? ', press A' : ''), bx + bw + 14, y + rowH / 2);
   });
   x.font = 'bold 20px sans-serif';
   x.textBaseline = 'top';
   x.textAlign = 'right';
   x.fillStyle = '#9fb4c8';
   x.fillText('you stand ' + VIEW_NAMES[currentView()] + ' (Y)', c.width - 10, 8);
-  if (lastHeavy) { x.textAlign = 'left'; x.fillStyle = '#ffb300'; x.fillText('HEAVY POSES ON', 16, 8); }
+  const topNote = hudNote && Date.now() < hudNote.until ? hudNote.text : lastHeavy ? 'HEAVY POSES ON' : '';
+  if (topNote) { x.textAlign = 'left'; x.fillStyle = '#ffb300'; x.fillText(topNote, 16, 8); }
   x.textAlign = 'left';
   const gl2 = gl;
   gl2.bindTexture(gl2.TEXTURE_2D, hud.texture);
@@ -233,6 +295,7 @@ function onFrame(time, frame) {
     const buttons = { stick: b(3).pressed, a: hand === 'right' && b(4).pressed, b: hand === 'right' && b(5).pressed, x: hand === 'left' && b(4).pressed, y: hand === 'left' && b(5).pressed };
     const prev = lastButtons[hand] || {};
     if (hand === 'right' && buttons.stick && !prev.stick) panelOn = !panelOn;
+    if (hand === 'right' && buttons.a && !prev.a) enableArms('');
     if (hand === 'right' && buttons.b && !prev.b) { cameraIndex = (cameraIndex + 1) % CAMERAS.length; setFeed(); }
     if (hand === 'left' && buttons.stick && !prev.stick && viewer) placePanel(viewer);
     if (hand === 'left' && buttons.y && !prev.y) { setView(currentView() === 'front' ? 'behind' : 'front'); pulse(pad, 0.5, 60); }
@@ -251,6 +314,14 @@ function onFrame(time, frame) {
       entry.q = [q.x, q.y, q.z, q.w];
     }
     hands[hand] = entry;
+  }
+  const aHeld = !!(lastButtons.right && lastButtons.right.a);
+  if (!aHeld) { aDownAt = null; aFired = false; }
+  else if (aDownAt === null) aDownAt = time;
+  else if (!aFired && time - aDownAt > 2000) {
+    aFired = true;
+    if (Object.values(hands).some(h => h.grip > 0.5)) { note('LET GO OF BOTH GRIPS', 3000); buzzAll(1.0, 80, true); }
+    else goHome();
   }
   if (ws && ws.readyState === 1) {
     ws.send(JSON.stringify({ type: 'hands', source: 'quest', seq: seq++, t: Date.now(), rtt, yaw: viewer ? headsetYaw(viewer) : 0, hands }));

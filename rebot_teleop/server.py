@@ -78,7 +78,8 @@ def create_app(sim=False, arms=("left", "right"), start_hardware=True):
     gist = links.Gist()
     usb = QuestUsb()
     recorder = Recorder(robot, cameras, teleop)
-    motorlog = MotorLog(robot, mode=lambda: "teleop" if teleop.active else "sequence" if sequencer.playing else "idle")
+    teleop.yield_to = lambda: sequencer.playing is not None
+    motorlog = MotorLog(robot, mode=lambda: "sequence" if sequencer.playing else "teleop" if teleop.active else "idle")
     cap_runs = {"current": None, "events": [], "seq": 0}
     scene_cache = {}
 
@@ -217,6 +218,7 @@ def create_app(sim=False, arms=("left", "right"), start_hardware=True):
             if joints.shape != (6,):
                 raise ValueError("joints_deg needs six numbers")
             unit.check_table(joints)
+            unit.check_reach(joints)
             result["duration_s"] = unit.arm.move(joints, speed)
             result["load"] = unit.load_report(joints)
         elif data.get("tip_xyz") is not None or data.get("tip_delta") is not None:
@@ -234,6 +236,8 @@ def create_app(sim=False, arms=("left", "right"), start_hardware=True):
                 result["load_note"] = f"Joint {worst['joint']} holds about {abs(worst['nm']):.0f} Nm here, more than the {worst['hold_nm']:.0f} Nm it holds for long" + (f"; about {left} s before the arm relaxes itself. Keep this short, or bring the hand closer in or lower" if left is not None else "")
         if data.get("gripper_m") is not None:
             unit.arm.grip(float(data["gripper_m"]))
+            if float(data["gripper_m"]) >= 0.8 * C.GRIPPER_WIDTH_M:
+                unit.set_payload(0.0)
         await wait_done(data)
         if data.get("gripper_m") is not None and data.get("wait", True):
             await asyncio.sleep(0.6)
@@ -246,7 +250,7 @@ def create_app(sim=False, arms=("left", "right"), start_hardware=True):
         unit = robot.unit(data.get("arm"))
         current, rotation = unit.kin.pose(unit.arm.command[:6] if unit.arm.torque else unit.arm.q)
         rot = rotation_from(data.get("rotation")) if data.get("rotation") is not None else rotation
-        q, err, rerr = unit.kin.ik(np.asarray(data["tip_xyz"], dtype=float), rot, unit.arm.q, iterations=80)
+        q, err, rerr = unit.solve(np.asarray(data["tip_xyz"], dtype=float), rot, unit.arm.command[:6] if unit.arm.torque else unit.arm.q)
         return {"reachable": err < 0.01, "position_error_m": round(err, 4), "rotation_error_deg": round(math.degrees(rerr), 1), "joints_deg": [round(math.degrees(v), 2) for v in q]}
 
     @app.post("/api/jog")
@@ -273,6 +277,8 @@ def create_app(sim=False, arms=("left", "right"), start_hardware=True):
             if width is None:
                 width = C.GRIPPER_WIDTH_M if data.get("state", "open") == "open" else 0.0
             unit.arm.grip(float(width))
+            if float(width) >= 0.8 * C.GRIPPER_WIDTH_M:
+                unit.set_payload(0.0)
         return {"ok": True}
 
     @app.post("/api/pose/save")
@@ -294,9 +300,9 @@ def create_app(sim=False, arms=("left", "right"), start_hardware=True):
             return lift.status()
         return await asyncio.to_thread(lift.command, data.get("action", "stop"))
 
-    def camera_jpeg(name):
+    def camera_jpeg(name, quality=75):
         camera = cameras.get(name)
-        return camera.jpeg_bytes()
+        return camera.jpeg_bytes(quality=quality)
 
     @app.get("/api/camera/{name}.jpg")
     async def camera_still(name: str):
@@ -311,17 +317,28 @@ def create_app(sim=False, arms=("left", "right"), start_hardware=True):
         return Response(jpeg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
     @app.get("/api/camera/{name}.mjpg")
-    async def camera_stream(name: str, request: Request):
+    async def camera_stream(name: str, request: Request, fps: float | None = None):
         cameras.get(name)
+        default_fps = C.MJPEG_VR_FPS if "vr" in request.query_params else C.MJPEG_FPS
+        rate = min(30.0, max(1.0, float(fps) if fps is not None else default_fps))
+        interval = 1.0 / rate
 
         async def frames():
             last = -1
+            sent_at = 0.0
             while not await request.is_disconnected():
-                jpeg, count = camera_jpeg(name)
+                now = time.monotonic()
+                wait = interval - (now - sent_at)
+                if wait > 0:
+                    await asyncio.sleep(min(wait, 0.05))
+                    continue
+                jpeg, count = camera_jpeg(name, C.MJPEG_QUALITY)
                 if jpeg and count != last:
                     last = count
+                    sent_at = time.monotonic()
                     yield b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(jpeg)).encode() + b"\r\n\r\n" + jpeg + b"\r\n"
-                await asyncio.sleep(0.01)
+                else:
+                    await asyncio.sleep(0.01)
 
         return StreamingResponse(frames(), media_type="multipart/x-mixed-replace; boundary=frame", headers={"Cache-Control": "no-store"})
 
@@ -378,12 +395,31 @@ def create_app(sim=False, arms=("left", "right"), start_hardware=True):
 
     @app.get("/api/limits")
     async def limits_get():
-        return {"heavy": robot.heavy}
+        return {"heavy": robot.heavy, "grip": robot.grip}
 
     @app.post("/api/limits")
     async def limits_set(request: Request):
         data = await body(request)
-        return robot.set_heavy(bool(data.get("heavy")))
+        out = {}
+        if data.get("grip") is not None:
+            out.update(robot.set_grip(float(data["grip"])))
+        if data.get("heavy") is not None or not out:
+            out.update(robot.set_heavy(bool(data.get("heavy"))))
+        return out
+
+    @app.get("/api/payload")
+    async def payload_get():
+        return {name: round(unit.payload_kg, 2) for name, unit in robot.units.items()}
+
+    @app.post("/api/payload")
+    async def payload_set(request: Request):
+        data = await body(request)
+        unit = robot.unit(data.get("arm"))
+        if data.get("kg") is None:
+            kg = await asyncio.to_thread(unit.weigh)
+        else:
+            kg = unit.set_payload(float(data["kg"]))
+        return {"arm": unit.name, "payload_kg": round(kg, 2), "hold_at_least_s": C.REACH_HOLD_MIN_S}
 
     @app.get("/api/table")
     async def table_get():
@@ -422,8 +458,18 @@ def create_app(sim=False, arms=("left", "right"), start_hardware=True):
         return {"sequences": sequencer.list(), **sequencer.status()}
 
     @app.get("/api/seq/{name}")
-    async def seq_get(name: str):
-        return sequencer.get(name)
+    async def seq_get(name: str, light: bool = False):
+        data = sequencer.get(name)
+        return sequencer.light(data) if light else data
+
+    @app.post("/api/seq/{name}/edit")
+    async def seq_edit(name: str, request: Request):
+        return sequencer.light(sequencer.edit(name, await body(request)))
+
+    @app.post("/api/seq/{name}/rename")
+    async def seq_rename(name: str, request: Request):
+        data = await body(request)
+        return sequencer.light(sequencer.rename(name, data.get("name")))
 
     @app.put("/api/seq/{name}")
     async def seq_put(name: str, request: Request):
@@ -442,7 +488,8 @@ def create_app(sim=False, arms=("left", "right"), start_hardware=True):
     async def seq_capture(name: str, request: Request):
         data = await body(request)
         step = sequencer.capture(data.get("arm"), float(data.get("speed_deg_s", C.MOVE_DEG_S)), float(data.get("pause_s", 0)))
-        return sequencer.add(name, step, data.get("index"))
+        saved = sequencer.add(name, step, data.get("index"))
+        return sequencer.light(saved) if data.get("light") else saved
 
     @app.post("/api/seq/{name}/step")
     async def seq_step(name: str, request: Request):
@@ -450,7 +497,8 @@ def create_app(sim=False, arms=("left", "right"), start_hardware=True):
         step = data.get("step") or {}
         if step.get("type") not in ("wait", "gripper", "lift", "pose"):
             raise ValueError("Add a wait, gripper, lift or pose step")
-        return sequencer.add(name, step, data.get("index"))
+        saved = sequencer.add(name, step, data.get("index"))
+        return sequencer.light(saved) if data.get("light") else saved
 
     @app.post("/api/seq/record/start")
     async def seq_record_start(request: Request):
@@ -461,7 +509,10 @@ def create_app(sim=False, arms=("left", "right"), start_hardware=True):
     async def seq_record_stop(request: Request):
         data = await body(request)
         step = sequencer.stop_recording(data.get("name"), data.get("label"))
-        return {"steps": len(step["t"]), "seconds": round(step["t"][-1] - step["t"][0], 2)}
+        out = {"steps": len(step["t"]), "seconds": round(step["t"][-1] - step["t"][0], 2)}
+        if data.get("name") and data.get("light"):
+            out["sequence"] = sequencer.light(sequencer.get(data["name"]))
+        return out
 
     @app.get("/api/seq/{name}/plan")
     async def seq_plan(name: str, speed: float = None):
@@ -470,7 +521,12 @@ def create_app(sim=False, arms=("left", "right"), start_hardware=True):
     @app.post("/api/seq/{name}/play")
     async def seq_play(name: str, request: Request):
         data = await body(request)
-        return await asyncio.to_thread(sequencer.play, name, None, data.get("loop"), data.get("speed"), data.get("start", 0))
+        return await asyncio.to_thread(sequencer.play, name, None, data.get("loop"), data.get("speed"), data.get("start", 0), data.get("smooth"), bool(data.get("power_off", False)))
+
+    @app.post("/api/seq-together")
+    async def seq_together(request: Request):
+        data = await body(request)
+        return await asyncio.to_thread(sequencer.play_together, {"left": data.get("left"), "right": data.get("right")}, data.get("loop", False), data.get("speed", 1.0), data.get("smooth"), bool(data.get("power_off", False)))
 
     @app.post("/api/seq/stop")
     async def seq_stop():
@@ -541,7 +597,7 @@ def create_app(sim=False, arms=("left", "right"), start_hardware=True):
         tick = 0
         try:
             while True:
-                message = {"twin": robot.twin(), "arms": {n: u.status() for n, u in robot.units.items()}, "teleop": teleop.status(), "record": recorder.status(), "sequencer": sequencer.status(), "lift": lift.status(), "sim": robot.sim, "heavy": robot.heavy}
+                message = {"twin": robot.twin(), "arms": {n: u.status() for n, u in robot.units.items()}, "teleop": teleop.status(), "record": recorder.status(), "sequencer": sequencer.status(), "lift": lift.status(), "sim": robot.sim, "heavy": robot.heavy, "grip": robot.grip}
                 if tick % 10 == 0:
                     message.update({"cameras": cameras.status(), "links": links.urls(), "usb": usb.status(), "gist": {"url": gist.url, "status": gist.status}, "can": robot.status()["can"]})
                 await websocket.send_text(json.dumps(message))
@@ -557,6 +613,19 @@ def create_app(sim=False, arms=("left", "right"), start_hardware=True):
             return
         await websocket.accept()
         last_report = 0.0
+        jobs = set()
+
+        def report(sent):
+            return {"type": "status", "t": sent, "teleop": teleop.status(), "arms": {n: {"ready": u.ready, "note": u.status()["note"], "fault": u.arm.fault, "connected": u.arm.connected, "heat": u.arm.heat.summary() if u.arm.torque else None, "rest": u.arm.rest_status(), "gripping": u.arm.gripping} for n, u in robot.units.items()}, "heavy": robot.heavy}
+
+        async def enable(name):
+            asked = [u.name for u in robot.pick(name)]
+            powered = await asyncio.to_thread(robot.ensure_powered, name, True)
+            try:
+                await websocket.send_text(json.dumps({**report(None), "enabled": {"asked": asked, "powered": powered}}))
+            except (WebSocketDisconnect, RuntimeError):
+                pass
+
         try:
             while True:
                 message = json.loads(await websocket.receive_text())
@@ -584,17 +653,42 @@ def create_app(sim=False, arms=("left", "right"), start_hardware=True):
                     continue
                 elif kind == "power":
                     await asyncio.to_thread(robot.ensure_powered)
+                    await websocket.send_text(json.dumps(report(None)))
+                    continue
+                elif kind == "enable":
+                    name = message.get("arm") if message.get("arm") in robot.units else None
+                    job = asyncio.create_task(enable(name))
+                    jobs.add(job)
+                    job.add_done_callback(jobs.discard)
+                    continue
+                elif kind == "status":
+                    await websocket.send_text(json.dumps(report(None)))
+                    continue
+                elif kind == "home":
+                    result = {"duration_s": 0.0, "moving": []}
+                    try:
+                        if any(hand.engaged for hand in teleop.hands.values()):
+                            raise ValueError("Let go of both grips first, then reset to home")
+                        teleop.release_all()
+                        moving = [n for n, u in robot.units.items() if u.ready]
+                        if not moving:
+                            raise ValueError("No arm is enabled. Enable the arms first")
+                        result = {"duration_s": round(robot.go("home", None, C.HOME_BUTTON_DEG_S), 2), "moving": moving}
+                    except ValueError as error:
+                        result["error"] = str(error)
+                    await websocket.send_text(json.dumps({**report(None), "home": result}))
                     continue
                 else:
                     continue
                 now = time.monotonic()
                 if now - last_report > 0.2:
                     last_report = now
-                    report = {"type": "status", "t": sent, "teleop": teleop.status(), "arms": {n: {"ready": u.ready, "note": u.status()["note"], "fault": u.arm.fault, "connected": u.arm.connected, "heat": u.arm.heat.summary() if u.arm.torque else None, "rest": u.arm.rest_status()} for n, u in robot.units.items()}, "heavy": robot.heavy}
-                    await websocket.send_text(json.dumps(report))
+                    await websocket.send_text(json.dumps(report(sent)))
         except (WebSocketDisconnect, RuntimeError, ValueError):
             pass
         finally:
+            for job in jobs:
+                job.cancel()
             teleop.release_all()
             lift.release()
 

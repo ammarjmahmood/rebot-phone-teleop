@@ -97,10 +97,10 @@ def scene():
     body = []
     colors_file = C.ASSETS / "robot_body" / "colors.json"
     colors = json.loads(colors_file.read_text()) if colors_file.exists() else {}
-    turn = origin_matrix([0.0, 0.0, C.POST_TOP_M], [0.0, 0.0, math.pi / 2])
+    turn = origin_matrix(C.HEAD_XYZ, [0.0, 0.0, math.pi / 2])
     for name, rgb in colors.items():
         source = C.ASSETS / "robot_body" / f"{name}.stl"
         if source.exists():
             body.append({"mesh": build_mesh(source, [0.001] * 3), "origin": turn, "rgba": [*rgb, 1.0]})
     post = {"size": [0.06, C.POST_W_M, C.POST_TOP_M], "center": [0.0, 0.0, C.POST_TOP_M / 2]}
-    return {"arm_parts": parts, "body": body, "post": post, "mounts": C.MOUNTS}
+    return {"arm_parts": parts, "body": body, "post": post, "mounts": C.MOUNTS, "boxes": C.LAYOUT.get("boxes", [])}
